@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tech Monitoring</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0b0b0e;--surface:#111116;--s2:#16161d;--s3:#1c1c26;
+  --border:#1f1f2e;--b2:#2a2a3e;
+  --text:#d8d8e8;--muted:#52526a;--dim:#333340;
+  --green:#22c55e;--red:#ef4444;--amber:#f59e0b;--blue:#4f9cf9;
+  --green-glow:#22c55e55;--red-glow:#ef444455;
+}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;min-height:100vh}
+a{color:inherit;text-decoration:none}
+button{cursor:pointer;font-family:inherit}
+
+/* ─ Sidebar ─────────────────────────────────────────── */
+.sidebar{
+  position:fixed;top:0;left:0;bottom:0;width:260px;
+  background:var(--surface);border-right:1px solid var(--border);
+  display:flex;flex-direction:column;z-index:100;
+}
+.sidebar-logo{
+  display:flex;align-items:center;gap:10px;
+  padding:1.2rem 1.2rem 1rem;border-bottom:1px solid var(--border);
+}
+.sidebar-logo .icon{font-size:1.2rem}
+.sidebar-logo h1{font-size:0.9rem;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#fff}
+.sidebar-logo .version{font-size:0.6rem;color:var(--muted);margin-top:2px}
+
+.sidebar-stats{
+  display:grid;grid-template-columns:1fr 1fr;gap:1px;
+  background:var(--border);border-bottom:1px solid var(--border);
+}
+.stat-box{background:var(--s2);padding:0.7rem 1rem;text-align:center}
+.stat-box .n{font-size:1.3rem;font-weight:700;color:#fff}
+.stat-box .l{font-size:0.6rem;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin-top:2px}
+.stat-box.up .n{color:var(--green)}
+.stat-box.down .n{color:var(--red)}
+
+.sidebar-list{flex:1;overflow-y:auto;padding:0.5rem 0}
+.sidebar-list::-webkit-scrollbar{width:4px}
+.sidebar-list::-webkit-scrollbar-thumb{background:var(--border)}
+
+.svc-item{
+  display:flex;align-items:center;gap:10px;
+  padding:0.65rem 1.2rem;cursor:pointer;
+  border-left:3px solid transparent;
+  transition:background 0.15s,border-color 0.15s;
+}
+.svc-item:hover{background:var(--s2)}
+.svc-item.active{background:var(--s3);border-left-color:var(--blue)}
+.svc-item .dot{width:9px;height:9px;border-radius:50%;flex-shrink:0;background:var(--muted)}
+.svc-item .dot.up{background:var(--green);box-shadow:0 0 6px var(--green-glow)}
+.svc-item .dot.down{background:var(--red);box-shadow:0 0 6px var(--red-glow)}
+.svc-item .svc-info{flex:1;min-width:0}
+.svc-item .svc-name{font-size:0.8rem;font-weight:600;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.svc-item .svc-ms{font-size:0.65rem;color:var(--muted);margin-top:2px}
+
+.sidebar-footer{padding:1rem 1.2rem;border-top:1px solid var(--border)}
+.add-btn{
+  width:100%;padding:0.6rem;background:var(--green);color:#000;
+  font-size:0.78rem;font-weight:700;letter-spacing:1px;
+  border:none;border-radius:8px;display:flex;align-items:center;
+  justify-content:center;gap:6px;transition:opacity 0.2s;
+}
+.add-btn:hover{opacity:0.85}
+
+/* ─ Main ──────────────────────────────────────────────── */
+.main{margin-left:260px;min-height:100vh}
+
+/* ─ Top bar ───────────────────────────────────────────── */
+.topbar{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:1rem 2rem;border-bottom:1px solid var(--border);
+  background:var(--surface);position:sticky;top:0;z-index:50;
+}
+.topbar h2{font-size:1rem;font-weight:600;color:#fff}
+.topbar-right{display:flex;align-items:center;gap:1rem;font-size:0.7rem;color:var(--muted)}
+.top-btn{padding:0.35rem 0.65rem;border:1px solid var(--border);border-radius:7px;background:var(--s2);color:var(--text);font-size:0.72rem;cursor:pointer}
+.top-btn:hover{background:var(--s3)}
+#countdown{background:var(--s2);border:1px solid var(--border);padding:3px 8px;border-radius:4px;color:#fff}
+
+/* ─ Content ───────────────────────────────────────────── */
+.content{padding:1.5rem 2rem}
+
+/* ─ Service card ──────────────────────────────────────── */
+.svc-card{
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:12px;margin-bottom:1rem;overflow:hidden;
+  transition:border-color 0.2s;cursor:pointer;
+}
+.svc-card:hover{border-color:var(--b2)}
+.svc-card.up  {border-left:3px solid var(--green)}
+.svc-card.down{border-left:3px solid var(--red)}
+
+.card-top{display:flex;align-items:center;gap:12px;padding:1rem 1.2rem}
+.card-dot{width:11px;height:11px;border-radius:50%;flex-shrink:0}
+.card-dot.up{background:var(--green);box-shadow:0 0 8px var(--green-glow)}
+.card-dot.down{background:var(--red);box-shadow:0 0 8px var(--red-glow)}
+.card-dot.unknown{background:var(--muted)}
+.card-name{font-size:0.92rem;font-weight:700;color:#fff;flex:1}
+.card-url{font-size:0.68rem;color:var(--blue);flex:2}
+.card-interval{font-size:0.62rem;color:var(--muted);background:var(--s2);border:1px solid var(--border);padding:2px 8px;border-radius:4px}
+.card-upbadge{
+  font-size:0.75rem;font-weight:700;padding:3px 12px;border-radius:20px;
+}
+.card-upbadge.up{background:var(--green);color:#000}
+.card-upbadge.down{background:var(--red);color:#fff}
+.card-upbadge.unknown{background:var(--muted);color:#fff}
+
+/* Heartbeat bar */
+.heartbeat{display:flex;align-items:center;gap:2px;padding:0 1.2rem 0.6rem;height:36px}
+.hb-bar{flex:1;height:28px;border-radius:3px;background:var(--s2);transition:opacity 0.2s}
+.hb-bar.up{background:var(--green)}
+.hb-bar.down{background:var(--red)}
+.hb-bar:hover{opacity:0.7}
+
+/* Metrics grid */
+.metrics-grid{
+  display:grid;grid-template-columns:repeat(7,1fr);
+  border-top:1px solid var(--border);
+}
+.m-cell{padding:0.8rem 1rem;border-right:1px solid var(--border)}
+.m-cell:last-child{border-right:none}
+.m-label{font-size:0.58rem;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);margin-bottom:2px}
+.m-sub{font-size:0.56rem;color:var(--dim);margin-bottom:6px}
+.m-val{font-size:1rem;font-weight:700;color:var(--text)}
+.m-val.good{color:var(--green)}
+.m-val.warn{color:var(--amber)}
+.m-val.bad{color:var(--red)}
+.m-val.link{text-decoration:underline;color:var(--blue)}
+
+/* ─ Empty state ───────────────────────────────────────── */
+.empty{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  padding:5rem 2rem;text-align:center;gap:1rem;
+}
+.empty .big{font-size:3rem}
+.empty h3{color:#fff;font-size:1.1rem}
+.empty p{color:var(--muted);font-size:0.82rem;max-width:300px;line-height:1.6}
+.empty-btn{
+  padding:0.65rem 1.5rem;background:var(--green);color:#000;
+  font-weight:700;font-size:0.82rem;border:none;border-radius:8px;
+}
+
+/* ─ Modal ─────────────────────────────────────────────── */
+.modal-overlay{
+  display:none;position:fixed;inset:0;background:#00000088;
+  z-index:500;align-items:flex-start;justify-content:center;
+  padding-top:60px;overflow-y:auto;
+}
+.modal-overlay.open{display:flex}
+.modal{
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:14px;width:100%;max-width:700px;
+  margin:0 1rem 2rem;overflow:hidden;
+}
+.modal-header{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:1.2rem 1.5rem;border-bottom:1px solid var(--border);
+}
+.modal-header h3{font-size:1.05rem;font-weight:700;color:#fff}
+.modal-close{background:none;border:none;color:var(--muted);font-size:1.3rem;padding:0 4px}
+.modal-close:hover{color:#fff}
+.modal-body{padding:1.5rem;display:grid;grid-template-columns:1fr 1fr;gap:1.5rem}
+.modal-col{display:flex;flex-direction:column;gap:1rem}
+.section-title{font-size:0.7rem;text-transform:uppercase;letter-spacing:2px;color:var(--muted);margin-bottom:0.3rem;font-weight:600}
+.form-group{display:flex;flex-direction:column;gap:6px}
+.form-label{font-size:0.75rem;color:var(--text);font-weight:500}
+.form-hint{font-size:0.65rem;color:var(--muted)}
+.form-control{
+  background:var(--s2);border:1px solid var(--border);
+  color:var(--text);font-size:0.82rem;padding:0.55rem 0.8rem;
+  border-radius:8px;outline:none;font-family:inherit;width:100%;
+}
+.form-control:focus{border-color:var(--blue)}
+.form-control option{background:var(--s2)}
+.modal-footer{
+  padding:1rem 1.5rem;border-top:1px solid var(--border);
+  display:flex;justify-content:flex-end;gap:0.75rem;
+}
+.btn-cancel{background:var(--s2);border:1px solid var(--border);color:var(--text);padding:0.55rem 1.2rem;border-radius:8px;font-size:0.82rem}
+.btn-cancel:hover{background:var(--s3)}
+.btn-save{background:var(--green);border:none;color:#000;padding:0.55rem 1.5rem;border-radius:8px;font-size:0.82rem;font-weight:700}
+.btn-save:hover{opacity:0.85}
+.error-msg{color:var(--red);font-size:0.72rem;padding:0.5rem 1.5rem;display:none}
+</style>
+</head>
+<body>
+
+<!-- Sidebar -->
+<aside class="sidebar">
+  <div class="sidebar-logo">
+    <span class="icon">📡</span>
+    <div>
+      <h1>Tech Monitoring</h1>
+      <div class="version" id="db-info">Loading…</div>
+    </div>
+  </div>
+  <div class="sidebar-stats">
+    <div class="stat-box up"><div class="n" id="s-up">–</div><div class="l">Up</div></div>
+    <div class="stat-box down"><div class="n" id="s-down">–</div><div class="l">Down</div></div>
+  </div>
+  <div class="sidebar-list" id="sidebar-list"></div>
+  <div class="sidebar-footer">
+    <button class="add-btn" onclick="openAddModal()">＋ Add New Monitor</button>
+  </div>
+</aside>
+
+<!-- Main -->
+<div class="main">
+  <div class="topbar">
+    <h2>All Monitors</h2>
+    <div class="topbar-right">
+      <button class="top-btn" onclick="location.href='/settings'">⚙ Settings</button>
+      <button class="top-btn" onclick="logout()">↪ Logout</button>
+      <span id="db-size"></span>
+      <span id="countdown">⟳ 30s</span>
+    </div>
+  </div>
+  <div class="content" id="content">
+    <div class="empty"><div class="big">📡</div><h3>No monitors yet</h3><p>Click the button below to add your first monitor.</p><button class="empty-btn" onclick="openAddModal()">＋ Add Monitor</button></div>
+  </div>
+</div>
+
+<!-- Add/Edit Modal -->
+<div class="modal-overlay" id="modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="modal-title">Add New Monitor</h3>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="modal-col">
+        <div class="section-title">General</div>
+        <div class="form-group">
+          <label class="form-label">Monitor Type</label>
+          <select class="form-control"><option>HTTP(s)</option></select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Friendly Name</label>
+          <input class="form-control" id="f-name" placeholder="My Website">
+        </div>
+        <div class="form-group">
+          <label class="form-label">URL</label>
+          <input class="form-control" id="f-url" placeholder="https://">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Heartbeat Interval</label>
+          <input class="form-control" id="f-interval" type="number" value="60" min="10">
+          <span class="form-hint" id="interval-hint">1 minute</span>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Retries</label>
+          <input class="form-control" id="f-retries" type="number" value="0" min="0" max="10">
+          <span class="form-hint">Maximum retries before marked as down</span>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Request Timeout (seconds)</label>
+          <input class="form-control" id="f-timeout" type="number" value="30" min="5">
+        </div>
+      </div>
+      <div class="modal-col">
+        <div class="section-title">HTTP Options</div>
+        <div class="form-group">
+          <label class="form-label">Method</label>
+          <select class="form-control" id="f-method">
+            <option>GET</option><option>POST</option><option>HEAD</option><option>PUT</option>
+          </select>
+        </div>
+      </div>
+    </div>
+    <div class="error-msg" id="modal-error"></div>
+    <div class="modal-footer">
+      <button class="btn-cancel" onclick="closeModal()">Cancel</button>
+      <button class="btn-save" id="modal-save-btn" onclick="saveMonitor()">Save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let services = [];
+let editId   = null;
+let countdown = 30;
+
+async function logout() {
+  await fetch("/api/auth/logout", {method:"POST"});
+  location.href = "/login";
+}
+
+// ── Interval hint
+document.getElementById("f-interval").addEventListener("input", e => {
+  const v = parseInt(e.target.value) || 0;
+  const h = document.getElementById("interval-hint");
+  if (v < 60) h.textContent = `${v} seconds`;
+  else if (v < 3600) h.textContent = `${(v/60).toFixed(1)} minutes`;
+  else h.textContent = `${(v/3600).toFixed(1)} hours`;
+});
+
+// ── Modal ────────────────────────────────────────────────
+function openAddModal() {
+  editId = null;
+  document.getElementById("modal-title").textContent = "Add New Monitor";
+  document.getElementById("modal-save-btn").textContent = "Save";
+  ["f-name","f-url"].forEach(id => document.getElementById(id).value = "");
+  document.getElementById("f-interval").value = 60;
+  document.getElementById("f-retries").value  = 0;
+  document.getElementById("f-timeout").value  = 30;
+  document.getElementById("f-method").value   = "GET";
+  document.getElementById("modal-error").style.display = "none";
+  document.getElementById("modal").classList.add("open");
+}
+function openEditModal(svc) {
+  editId = svc.id;
+  document.getElementById("modal-title").textContent = "Edit Monitor";
+  document.getElementById("modal-save-btn").textContent = "Update";
+  document.getElementById("f-name").value     = svc.name;
+  document.getElementById("f-url").value      = svc.url;
+  document.getElementById("f-interval").value = svc.interval;
+  document.getElementById("f-retries").value  = svc.retries;
+  document.getElementById("f-timeout").value  = svc.timeout;
+  document.getElementById("f-method").value   = svc.method;
+  document.getElementById("modal-error").style.display = "none";
+  document.getElementById("modal").classList.add("open");
+}
+function closeModal() {
+  document.getElementById("modal").classList.remove("open");
+}
+document.getElementById("modal").addEventListener("click", e => {
+  if (e.target === document.getElementById("modal")) closeModal();
+});
+
+async function saveMonitor() {
+  const body = {
+    name:     document.getElementById("f-name").value.trim(),
+    url:      document.getElementById("f-url").value.trim(),
+    interval: parseInt(document.getElementById("f-interval").value),
+    retries:  parseInt(document.getElementById("f-retries").value),
+    timeout:  parseInt(document.getElementById("f-timeout").value),
+    method:   document.getElementById("f-method").value,
+  };
+  if (!body.name || !body.url) {
+    showError("Name and URL are required.");
+    return;
+  }
+  const errEl = document.getElementById("modal-error");
+  errEl.style.display = "none";
+  try {
+    let res;
+    if (editId) {
+      res = await fetch(`/api/services/${editId}`, {method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    } else {
+      res = await fetch("/api/services", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    }
+    const data = await res.json();
+    if (!res.ok) { errEl.textContent = data.error || "Error"; errEl.style.display="block"; return; }
+    closeModal();
+    await refresh();
+  } catch(e) { errEl.textContent = e.message; errEl.style.display="block"; }
+}
+
+function showError(msg) {
+  const el = document.getElementById("modal-error");
+  el.textContent = msg; el.style.display = "block";
+}
+
+// ── Helpers ──────────────────────────────────────────────
+function cls(v, g, w) {
+  if (v===null||v===undefined) return "";
+  return v>=g?"good":v>=w?"warn":"bad";
+}
+function dCls(d) {
+  if (d===null||d===undefined) return "";
+  return d>60?"good":d>14?"warn":"bad";
+}
+function fmt(v, s="") { return v===null||v===undefined?"–":v+s; }
+
+// ── Render ───────────────────────────────────────────────
+function renderSidebar(svcs) {
+  const up   = svcs.filter(s=>s.current_up===true).length;
+  const down = svcs.filter(s=>s.current_up===false).length;
+  document.getElementById("s-up").textContent   = up;
+  document.getElementById("s-down").textContent = down;
+  document.getElementById("sidebar-list").innerHTML = svcs.map(s => {
+    const dc = s.current_up===null?"":s.current_up?"up":"down";
+    const ms = s.current_ms ? Math.round(s.current_ms)+"ms" : "Waiting…";
+    return `<div class="svc-item" onclick="location.href='/service/${s.id}'">
+      <div class="dot ${dc}"></div>
+      <div class="svc-info">
+        <div class="svc-name">${s.name}</div>
+        <div class="svc-ms">${ms} · every ${s.interval}s</div>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+function renderCards(svcs) {
+  if (!svcs.length) {
+    document.getElementById("content").innerHTML = `
+      <div class="empty"><div class="big">📡</div><h3>No monitors yet</h3>
+      <p>Add your first monitor to start tracking uptime.</p>
+      <button class="empty-btn" onclick="openAddModal()">＋ Add Monitor</button></div>`;
+    return;
+  }
+  document.getElementById("content").innerHTML = svcs.map(s => {
+    const dc = s.current_up===null?"unknown":s.current_up?"up":"down";
+    const bc = s.current_up===null?"unknown":s.current_up?"up":"down";
+    const curMs = s.current_ms ? Math.round(s.current_ms)+"ms" : "–";
+    const avgMs = s.avg_ms_24h ? s.avg_ms_24h.toFixed(1)+"ms"  : "–";
+    const sslD  = s.ssl_days!==null  ? s.ssl_days+" days"  : "–";
+    const domD  = s.domain_days!==null ? s.domain_days+" days" : "–";
+    const hb = (s.heartbeat||[]).map(h =>
+      `<div class="hb-bar ${h.ok?'up':'down'}" title="${new Date(h.ts*1000).toLocaleTimeString()}"></div>`
+    ).join("");
+    return `
+    <div class="svc-card ${dc}" onclick="location.href='/service/${s.id}'">
+      <div class="card-top">
+        <div class="card-dot ${dc}"></div>
+        <div class="card-name">${s.name}</div>
+        <div class="card-url">${s.url}</div>
+        <div class="card-interval">every ${s.interval}s</div>
+        <div class="card-upbadge ${bc}">${s.current_up===null?"Pending":s.current_up?"Up":"Down"}</div>
+      </div>
+      <div class="heartbeat">${hb||'<span style="color:var(--muted);font-size:0.7rem">Waiting for first check…</span>'}</div>
+      <div class="metrics-grid">
+        ${mc("Response","(Current)",curMs,s.current_ms>800?"warn":s.current_ms?"good":"")}
+        ${mc("Avg. Response","(24 hours)",avgMs,s.avg_ms_24h>800?"warn":s.avg_ms_24h?"good":"")}
+        ${mc("Uptime","(24 hours)",fmt(s.uptime_24h,"%"),cls(s.uptime_24h,99.9,95))}
+        ${mc("Uptime","(30 days)",fmt(s.uptime_30d,"%"),cls(s.uptime_30d,99.9,95))}
+        ${mc("Uptime","(1 year)",fmt(s.uptime_1y,"%"),cls(s.uptime_1y,99.9,95))}
+        ${mc("Cert Exp.",s.ssl_expiry||"–",sslD,dCls(s.ssl_days),"link")}
+        ${mc("Domain Exp.",s.domain_expiry||"–",domD,dCls(s.domain_days))}
+      </div>
+    </div>`;
+  }).join("");
+}
+
+function mc(label, sub, val, cls, extra="") {
+  return `<div class="m-cell">
+    <div class="m-label">${label}</div>
+    <div class="m-sub">${sub}</div>
+    <div class="m-val ${cls} ${extra}">${val}</div>
+  </div>`;
+}
+
+// ── Data fetch ───────────────────────────────────────────
+async function refresh() {
+  try {
+    const [svcsRes, statsRes] = await Promise.all([
+      fetch("/api/services"),
+      fetch("/api/db-stats"),
+    ]);
+    if (svcsRes.status === 401 || statsRes.status === 401) {
+      location.href = "/login";
+      return;
+    }
+    const svcs = await svcsRes.json();
+    const stats = await statsRes.json();
+    services = svcs;
+    renderSidebar(svcs);
+    renderCards(svcs);
+    document.getElementById("db-info").textContent = `${stats.checks.toLocaleString()} checks stored`;
+    document.getElementById("db-size").textContent = `DB: ${stats.db_size_kb} KB`;
+  } catch(e) {
+    document.getElementById("content").innerHTML =
+      `<p style="color:var(--red);padding:2rem">Error: ${e.message}</p>`;
+  }
+}
+
+// ── Countdown ────────────────────────────────────────────
+setInterval(()=>{
+  countdown--;
+  if(countdown<=0){countdown=30;refresh();}
+  document.getElementById("countdown").textContent=`⟳ ${countdown}s`;
+},1000);
+
+refresh();
+</script>
+</body>
+</html>

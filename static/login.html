@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Login - Uptime Monitor</title>
+<style>
+body{margin:0;background:#0b0b0e;color:#e8e8f0;font-family:Segoe UI,system-ui,sans-serif;display:grid;place-items:center;min-height:100vh}
+.card{width:min(92vw,420px);background:#111116;border:1px solid #242436;border-radius:14px;padding:1.2rem}
+h2{margin:0 0 .9rem}
+label{display:block;font-size:.8rem;margin:.7rem 0 .25rem;color:#a0a0b8}
+input{width:100%;padding:.6rem .7rem;border-radius:8px;border:1px solid #2a2a3e;background:#171722;color:#fff}
+button{margin-top:1rem;width:100%;padding:.65rem;border:0;border-radius:8px;background:#22c55e;color:#001206;font-weight:700;cursor:pointer}
+.muted{font-size:.78rem;color:#8a8aa0;margin:.2rem 0 .8rem}
+.err{color:#ef4444;font-size:.8rem;min-height:1.1rem}
+</style>
+</head>
+<body>
+  <div class="card">
+    <h2 id="title">Login</h2>
+    <div class="muted" id="desc">Sign in to continue.</div>
+    <label>Username</label>
+    <input id="username" placeholder="admin">
+    <label>Password</label>
+    <input id="password" type="password" placeholder="******">
+    <div class="err" id="err"></div>
+    <button id="submit" onclick="submitForm()">Login</button>
+  </div>
+<script>
+let setupMode = false;
+
+async function init(){
+  const s = await fetch("/api/auth/status").then(r=>r.json());
+  if (s.logged_in){ location.href = "/"; return; }
+  setupMode = !s.admin_exists;
+  document.getElementById("title").textContent = setupMode ? "Create Admin User" : "Login";
+  document.getElementById("desc").textContent  = setupMode
+    ? "No admin found. Create the first admin account."
+    : "Sign in to continue.";
+  document.getElementById("submit").textContent = setupMode ? "Create Admin" : "Login";
+}
+
+async function submitForm(){
+  const username = document.getElementById("username").value.trim();
+  const password = document.getElementById("password").value;
+  const url = setupMode ? "/api/auth/setup-admin" : "/api/auth/login";
+  const res = await fetch(url, {
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({username,password})
+  });
+  const data = await res.json().catch(()=>({}));
+  if (!res.ok){
+    document.getElementById("err").textContent = data.error || "Request failed";
+    return;
+  }
+  location.href = "/";
+}
+
+init();
+</script>
+</body>
+</html>

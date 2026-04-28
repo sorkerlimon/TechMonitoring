@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Settings — Tech Monitoring</title>
+<style>
+body{margin:0;background:#0b0b0e;color:#ececf4;font-family:Segoe UI,system-ui,sans-serif}
+.wrap{max-width:900px;margin:0 auto;padding:1.2rem}
+a{color:#60a5fa;text-decoration:none}
+.card{margin-top:1rem;background:#111116;border:1px solid #242436;border-radius:12px;padding:1rem}
+input{padding:.55rem .7rem;border-radius:8px;border:1px solid #2a2a3e;background:#171722;color:#fff;min-width:220px}
+button{padding:.55rem .8rem;border:0;border-radius:8px;background:#22c55e;color:#001206;font-weight:700;cursor:pointer}
+table{width:100%;border-collapse:collapse;margin-top:.8rem;font-size:.9rem}
+th,td{padding:.45rem;border-bottom:1px solid #26263a;text-align:left}
+.mono{font-family:Consolas,monospace}
+.msg{margin-top:.7rem;color:#f59e0b}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div><a href="/">← Dashboard</a></div>
+  <h2>Settings</h2>
+  <div class="card">
+    <h3 style="margin-top:0">API Keys</h3>
+    <div>
+      <input id="key-name" placeholder="Key name (ex: Postman)">
+      <button onclick="createKey()">Create Key</button>
+      <button style="margin-left:.4rem;background:#334155;color:#e2e8f0" onclick="logout()">Logout</button>
+    </div>
+    <div class="msg" id="msg"></div>
+    <table>
+      <thead><tr><th>Name</th><th>Prefix</th><th>Status</th><th>Created</th><th>Last Used</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+</div>
+<script>
+async function ensureAuth(){
+  const s = await fetch("/api/auth/status").then(r=>r.json());
+  if (!s.logged_in){ location.href = "/login"; }
+}
+
+async function loadKeys(){
+  const res = await fetch("/api/settings/api-keys");
+  if (!res.ok){ return; }
+  const keys = await res.json();
+  document.getElementById("rows").innerHTML = keys.map(k=>`
+    <tr>
+      <td>${k.name}</td>
+      <td class="mono">${k.key_prefix}...</td>
+      <td>${k.active ? "active" : "inactive"}</td>
+      <td>${k.created_at || "-"}</td>
+      <td>${k.last_used_at || "-"}</td>
+    </tr>
+  `).join("") || `<tr><td colspan="5">No API keys yet</td></tr>`;
+}
+
+async function createKey(){
+  const name = document.getElementById("key-name").value.trim() || "default";
+  const res = await fetch("/api/settings/api-keys", {
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({name})
+  });
+  const data = await res.json().catch(()=>({}));
+  if (!res.ok){
+    document.getElementById("msg").textContent = data.error || "Could not create key";
+    return;
+  }
+  document.getElementById("msg").textContent = `New API Key (copy now): ${data.api_key}`;
+  document.getElementById("key-name").value = "";
+  await loadKeys();
+}
+
+async function logout(){
+  await fetch("/api/auth/logout", {method:"POST"});
+  location.href = "/login";
+}
+
+ensureAuth().then(loadKeys);
+</script>
+</body>
+</html>
