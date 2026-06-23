@@ -68,7 +68,7 @@ button{cursor:pointer;font-family:inherit}
 /* ─ Heartbeat section ───────────────────────────────────── */
 .hb-section{background:var(--surface);border-bottom:1px solid var(--border);padding:1.2rem 2rem}
 .hb-row{display:flex;align-items:center;gap:3px;height:40px;margin-bottom:0.4rem}
-.hb-bar{flex:1;height:34px;border-radius:3px;background:var(--s2);cursor:pointer;position:relative;transition:opacity 0.2s}
+.hb-bar{flex:1;height:34px;border-radius:3px;background:var(--s2);cursor:pointer;position:relative;transition:background-color 0.35s ease, opacity 0.35s ease}
 .hb-bar:hover{opacity:0.75}
 .hb-bar.up{background:var(--green)}
 .hb-bar.down{background:var(--red)}
@@ -144,6 +144,10 @@ tr:hover td{background:var(--s2)}
 .form-group{display:flex;flex-direction:column;gap:6px}
 .form-label{font-size:0.75rem;color:var(--text);font-weight:500}
 .form-hint{font-size:0.65rem;color:var(--muted)}
+.notify-pick{display:flex;flex-direction:column;gap:.4rem;max-height:150px;overflow-y:auto;padding:.55rem;border:1px solid var(--border);border-radius:8px;background:var(--s2)}
+.notify-pick label{display:flex;align-items:center;gap:.5rem;font-size:.82rem;cursor:pointer;color:var(--text)}
+.notify-pick .empty-hint{font-size:.78rem;color:var(--muted);line-height:1.45}
+.notify-pick a{color:var(--blue)}
 .form-control{background:var(--s2);border:1px solid var(--border);color:var(--text);font-size:0.82rem;padding:0.55rem 0.8rem;border-radius:8px;outline:none;font-family:inherit;width:100%}
 .form-control:focus{border-color:var(--blue)}
 .form-control option{background:var(--s2)}
@@ -299,6 +303,11 @@ tr:hover td{background:var(--s2)}
             <option>GET</option><option>POST</option><option>HEAD</option><option>PUT</option>
           </select>
         </div>
+        <div class="form-group">
+          <div class="section-title" style="margin-top:.25rem">Notifications</div>
+          <span class="form-hint">Choose channels for this monitor. <a href="/settings" target="_blank">Create channels in Settings</a></span>
+          <div class="notify-pick" id="f-notify-channels"></div>
+        </div>
       </div>
     </div>
     <div class="error-msg" id="modal-error"></div>
@@ -314,6 +323,34 @@ const sid = parseInt(location.pathname.split("/").pop());
 let svcData = null;
 let checksPage = 1;
 let checksTotalPages = 1;
+let notifyChannels = [];
+let liveTimer = null;
+let checksTimer = null;
+let lastHistoryKey = "";
+
+async function loadNotifyChannelOptions() {
+  const res = await fetch("/api/settings/notifications/options");
+  if (res.status === 401) { location.href = "/login"; return; }
+  notifyChannels = res.ok ? await res.json() : [];
+}
+
+function renderNotifyPicker(selectedIds = []) {
+  const el = document.getElementById("f-notify-channels");
+  const enabled = notifyChannels.filter(c => c.enabled);
+  if (!enabled.length) {
+    el.innerHTML = `<div class="empty-hint">No channels yet. <a href="/settings" target="_blank">Open Settings → Notifications</a> to create Slack, email, or webhook channels.</div>`;
+    return;
+  }
+  const sel = new Set((selectedIds || []).map(Number));
+  el.innerHTML = enabled.map(c => `
+    <label><input type="checkbox" value="${c.id}" ${sel.has(c.id) ? "checked" : ""}>
+      ${c.name} <span style="color:var(--muted)">(${c.type})</span></label>
+  `).join("");
+}
+
+function getSelectedNotifyChannels() {
+  return [...document.querySelectorAll("#f-notify-channels input:checked")].map(el => parseInt(el.value, 10));
+}
 
 // ── Sidebar ─────────────────────────────────────────────
 async function loadSidebar() {
@@ -348,26 +385,26 @@ function timeAgo(ts){
 }
 
 // ── Render ──────────────────────────────────────────────
-function render(s) {
-  svcData = s;
+function renderHeader(s) {
   document.title = s.name + " — Tech Monitoring";
   document.getElementById("svc-name").textContent = s.name;
   const urlEl = document.getElementById("svc-url");
   urlEl.textContent = s.url; urlEl.href = s.url;
   document.getElementById("svc-id").textContent = "#" + s.id;
 
-  // Pause button
   const pb = document.getElementById("btn-pause");
   if (s.paused) { pb.textContent = "▶ Resume"; pb.className = "btn edit"; }
   else          { pb.textContent = "⏸ Pause";  pb.className = "btn pause"; }
 
-  // Up badge
+  document.getElementById("check-info").textContent = `Check every ${s.interval} seconds (${s.interval} seconds)`;
+}
+
+function renderLive(s) {
   const badge = document.getElementById("up-badge");
   const bc = s.current_up===null?"unknown":s.current_up?"up":"down";
   badge.className = "up-badge " + bc;
   badge.textContent = s.current_up===null?"?":s.current_up?"Up":"Down";
 
-  // Heartbeat bars
   const hb = s.heartbeat || [];
   document.getElementById("hb-row").innerHTML = hb.map(h=>
     `<div class="hb-bar ${h.ok?'up':'down'}" title="${new Date(h.ts*1000).toLocaleTimeString()} — ${h.ok?'Up':'Down'}"></div>`
@@ -375,9 +412,7 @@ function render(s) {
   if (hb.length) {
     document.getElementById("hb-start").textContent = timeAgo(hb[0].ts);
   }
-  document.getElementById("check-info").textContent = `Check every ${s.interval} seconds (${s.interval} seconds)`;
 
-  // Stats
   const curMs = s.current_ms ? Math.round(s.current_ms)+"ms" : "–";
   const avgMs = s.avg_ms_24h ? s.avg_ms_24h.toFixed(2)+"ms"  : "–";
   const sslD  = s.ssl_days!==null ? s.ssl_days+" days" : "–";
@@ -392,8 +427,19 @@ function render(s) {
     sc("Domain Exp.",s.domain_expiry||"–",domD,dCls(s.domain_days),"",""),
   ].join("");
 
-  // Chart
-  drawChart(s.history || []);
+  const history = s.history || [];
+  const historyKey = history.length ? `${history.length}:${history[history.length-1].ts}:${history[history.length-1].ms}` : "empty";
+  if (historyKey !== lastHistoryKey) {
+    lastHistoryKey = historyKey;
+    drawChart(history);
+  }
+}
+
+function render(s) {
+  svcData = s;
+  renderHeader(s);
+  renderLive(s);
+  scheduleLiveRefresh();
 }
 
 function sc(label,sub,val,cls,extra,sub2) {
@@ -488,7 +534,7 @@ function drawChart(history) {
     ctx.fillText(lbl, x, H-pad.b+14);
   });
 
-  const px = i => pad.l + (i/(n-1))*cW;
+  const px = i => n<=1 ? pad.l + cW/2 : pad.l + (i/(n-1))*cW;
   const py = v => pad.t + cH - ((v-mn)/(mx-mn))*cH;
 
   // Area fill
@@ -562,6 +608,7 @@ function openEditModal() {
   document.getElementById("f-timeout").value  = svcData.timeout;
   document.getElementById("f-method").value   = svcData.method;
   document.getElementById("modal-error").style.display = "none";
+  loadNotifyChannelOptions().then(() => renderNotifyPicker(svcData.notification_channels || []));
   document.getElementById("modal").classList.add("open");
 }
 function closeModal() { document.getElementById("modal").classList.remove("open"); }
@@ -577,6 +624,7 @@ async function saveEdit() {
     retries:  parseInt(document.getElementById("f-retries").value),
     timeout:  parseInt(document.getElementById("f-timeout").value),
     method:   document.getElementById("f-method").value,
+    notification_channels: getSelectedNotifyChannels(),
   };
   const res  = await fetch(`/api/services/${sid}`, {
     method:"PUT", headers:{"Content-Type":"application/json"},
@@ -587,6 +635,36 @@ async function saveEdit() {
   await loadData();
 }
 
+// ── Live refresh (heartbeat + chart) ─────────────────────
+function livePollMs() {
+  const interval = svcData?.interval || 10;
+  return Math.max(3000, interval * 1000);
+}
+
+function scheduleLiveRefresh() {
+  if (liveTimer) clearInterval(liveTimer);
+  liveTimer = setInterval(refreshLive, livePollMs());
+}
+
+function scheduleChecksRefresh() {
+  if (checksTimer) clearInterval(checksTimer);
+  checksTimer = setInterval(() => {
+    if (checksPage === 1) loadChecks();
+  }, livePollMs());
+}
+
+async function refreshLive() {
+  if (document.getElementById("modal").classList.contains("open")) return;
+  const res = await fetch(`/api/services/${sid}`);
+  if (res.status === 401) { location.href = "/login"; return; }
+  if (!res.ok) return;
+  const s = await res.json();
+  const prevInterval = svcData?.interval;
+  svcData = s;
+  renderLive(s);
+  if (s.interval !== prevInterval) scheduleLiveRefresh();
+}
+
 // ── Main load ────────────────────────────────────────────
 async function loadData() {
   const res = await fetch(`/api/services/${sid}`);
@@ -594,11 +672,15 @@ async function loadData() {
   const s = await res.json();
   render(s);
   await loadChecks();
+  scheduleChecksRefresh();
 }
 
 loadSidebar();
 loadData();
-setInterval(loadData, 30000);
+setInterval(loadSidebar, 60000);
+window.addEventListener("resize", () => {
+  if (svcData?.history) drawChart(svcData.history);
+});
 </script>
 </body>
 </html>

@@ -5,80 +5,817 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Settings — Tech Monitoring</title>
 <style>
-body{margin:0;background:#0b0b0e;color:#ececf4;font-family:Segoe UI,system-ui,sans-serif}
-.wrap{max-width:900px;margin:0 auto;padding:1.2rem}
-a{color:#60a5fa;text-decoration:none}
-.card{margin-top:1rem;background:#111116;border:1px solid #242436;border-radius:12px;padding:1rem}
-input{padding:.55rem .7rem;border-radius:8px;border:1px solid #2a2a3e;background:#171722;color:#fff;min-width:220px}
-button{padding:.55rem .8rem;border:0;border-radius:8px;background:#22c55e;color:#001206;font-weight:700;cursor:pointer}
-table{width:100%;border-collapse:collapse;margin-top:.8rem;font-size:.9rem}
-th,td{padding:.45rem;border-bottom:1px solid #26263a;text-align:left}
-.mono{font-family:Consolas,monospace}
-.msg{margin-top:.7rem;color:#f59e0b}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0a0a0d;--surface:#111116;--s2:#16161d;--s3:#1c1c26;
+  --border:#1f1f2e;--b2:#2a2a3e;
+  --text:#e6e6f0;--muted:#7a7a92;--dim:#52526a;
+  --green:#22c55e;--red:#ef4444;--amber:#f59e0b;--blue:#4f9cf9;--violet:#8b5cf6;
+  --green-glow:#22c55e33;--red-glow:#ef444433;
+  --radius:14px;
+}
+body{
+  background:
+    radial-gradient(1200px 600px at 20% -10%, #16162422, transparent),
+    radial-gradient(1000px 500px at 100% 0%, #1a103022, transparent),
+    var(--bg);
+  color:var(--text);
+  font-family:'Segoe UI',system-ui,-apple-system,sans-serif;
+  min-height:100vh;
+  -webkit-font-smoothing:antialiased;
+}
+a{color:var(--blue);text-decoration:none}
+.wrap{max-width:1040px;margin:0 auto;padding:2rem 1.4rem 4rem}
+
+/* Header */
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:.8rem}
+.brand .logo{
+  width:42px;height:42px;border-radius:12px;display:grid;place-items:center;
+  background:linear-gradient(135deg,#22c55e,#0ea5e9);font-size:1.2rem;
+  box-shadow:0 8px 22px -8px #22c55eaa;
+}
+.brand h1{font-size:1.15rem;font-weight:700;letter-spacing:.3px}
+.brand .sub{font-size:.74rem;color:var(--muted);margin-top:1px;letter-spacing:.5px;text-transform:uppercase}
+.top-actions{display:flex;align-items:center;gap:.6rem}
+
+/* Buttons */
+.btn{
+  padding:.6rem .95rem;border:1px solid transparent;border-radius:10px;
+  font-weight:600;font-size:.86rem;cursor:pointer;font-family:inherit;
+  display:inline-flex;align-items:center;gap:.45rem;transition:.16s ease;white-space:nowrap;
+}
+.btn-primary{background:linear-gradient(135deg,#22c55e,#16a34a);color:#04210f}
+.btn-primary:hover{filter:brightness(1.08);transform:translateY(-1px)}
+.btn-ghost{background:var(--s2);color:var(--text);border-color:var(--b2)}
+.btn-ghost:hover{background:var(--s3);border-color:#3a3a52}
+.btn-danger{background:transparent;color:#f87171;border-color:#7f1d1d66}
+.btn-danger:hover{background:#7f1d1d22;border-color:#b91c1c}
+.btn-sm{padding:.4rem .65rem;font-size:.78rem;border-radius:8px}
+.btn:disabled{opacity:.5;cursor:not-allowed;transform:none}
+
+/* Tabs */
+.tabs{display:flex;gap:.4rem;margin:1.8rem 0 1.2rem;border-bottom:1px solid var(--border)}
+.tab{
+  padding:.7rem 1.1rem;font-size:.9rem;font-weight:600;color:var(--muted);
+  cursor:pointer;border:0;background:none;font-family:inherit;position:relative;
+  border-bottom:2px solid transparent;margin-bottom:-1px;transition:.15s;
+}
+.tab:hover{color:var(--text)}
+.tab.active{color:#fff;border-bottom-color:var(--green)}
+
+/* Cards */
+.card{
+  background:linear-gradient(180deg,#13131a,#101015);
+  border:1px solid var(--border);border-radius:var(--radius);
+  padding:1.4rem;box-shadow:0 16px 40px -24px #000;
+}
+.card + .card{margin-top:1.2rem}
+.card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;margin-bottom:1.1rem}
+.card-head h2{font-size:1.02rem;font-weight:700}
+.card-head p{font-size:.82rem;color:var(--muted);margin-top:.25rem;max-width:46ch}
+
+/* Form rows */
+.form-row{display:flex;gap:.6rem;flex-wrap:wrap;align-items:center}
+.field{display:flex;flex-direction:column;gap:.3rem}
+.field label{font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;padding-left:.15rem}
+input[type=text],input[type=password],input[type=number],input[type=email],select{
+  padding:.62rem .8rem;border-radius:10px;border:1px solid var(--b2);
+  background:var(--s2);color:#fff;font-size:.9rem;font-family:inherit;min-width:200px;transition:.15s;
+}
+input:focus,select:focus{outline:none;border-color:#22c55e88;box-shadow:0 0 0 3px #22c55e22;background:var(--s3)}
+input::placeholder{color:var(--dim)}
+select{cursor:pointer}
+.event-chips{display:flex;gap:.55rem;flex-wrap:wrap;margin-top:.2rem}
+.event-chip{
+  display:inline-flex;align-items:center;gap:.35rem;padding:.35rem .65rem;border-radius:999px;
+  border:1px solid var(--b2);background:var(--s2);font-size:.8rem;cursor:pointer;user-select:none;
+}
+.event-chip input{display:none}
+.event-chip.on{border-color:#22c55e66;background:#22c55e18;color:#86efac}
+.badge-slack{background:#4f9cf622;color:#93c5fd;border:1px solid #4f9cf644}
+.badge-email{background:#f59e0b22;color:#fcd34d;border:1px solid #f59e0b44}
+.badge-webhook{background:#8b5cf622;color:#c4b5fd;border:1px solid #8b5cf644}
+.config-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.7rem;margin-top:.8rem}
+
+/* admin toggle */
+.toggle{display:flex;align-items:center;gap:.5rem;cursor:pointer;user-select:none;font-size:.86rem;color:var(--text)}
+.toggle input{display:none}
+.switch{width:40px;height:22px;border-radius:20px;background:var(--b2);position:relative;transition:.18s}
+.switch::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#fff;transition:.18s}
+.toggle input:checked + .switch{background:var(--green)}
+.toggle input:checked + .switch::after{transform:translateX(18px)}
+
+/* Table */
+.table-wrap{margin-top:1.2rem;border:1px solid var(--border);border-radius:12px;overflow:hidden}
+table{width:100%;border-collapse:collapse;font-size:.88rem}
+thead th{
+  text-align:left;padding:.7rem .9rem;background:var(--s2);color:var(--muted);
+  font-size:.72rem;text-transform:uppercase;letter-spacing:.6px;font-weight:600;
+}
+tbody td{padding:.75rem .9rem;border-top:1px solid var(--border);vertical-align:middle}
+tbody tr:hover{background:#ffffff05}
+.mono{font-family:Consolas,'SF Mono',monospace;font-size:.84rem}
+.avatar{
+  width:30px;height:30px;border-radius:9px;display:inline-grid;place-items:center;
+  font-weight:700;font-size:.82rem;color:#fff;margin-right:.6rem;vertical-align:middle;
+}
+.user-cell{display:flex;align-items:center}
+.badge{
+  display:inline-flex;align-items:center;gap:.3rem;padding:.2rem .55rem;border-radius:999px;
+  font-size:.72rem;font-weight:600;
+}
+.badge-admin{background:#8b5cf622;color:#c4b5fd;border:1px solid #8b5cf644}
+.badge-user{background:#33334022;color:#9ca3af;border:1px solid #33334066}
+.badge-on{background:var(--green-glow);color:#86efac;border:1px solid #22c55e44}
+.badge-off{background:#33334022;color:#9ca3af;border:1px solid #33334066}
+.you-tag{font-size:.68rem;color:var(--green);margin-left:.4rem;font-weight:600}
+.row-actions{display:flex;align-items:center;justify-content:flex-end;gap:.45rem;flex-wrap:wrap}
+.empty{padding:2.2rem;text-align:center;color:var(--muted);font-size:.88rem}
+
+/* toast */
+.toast{
+  position:fixed;bottom:1.4rem;left:50%;transform:translateX(-50%) translateY(20px);
+  background:var(--s3);border:1px solid var(--b2);color:#fff;padding:.8rem 1.1rem;
+  border-radius:12px;font-size:.88rem;box-shadow:0 18px 40px -16px #000;
+  opacity:0;pointer-events:none;transition:.25s;z-index:200;max-width:90vw;
+}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.toast.ok{border-color:#22c55e66}
+.toast.err{border-color:#ef444466}
+
+/* key reveal box */
+.keybox{
+  margin-top:1rem;padding:.9rem 1rem;border-radius:12px;border:1px dashed #22c55e66;
+  background:#22c55e0e;display:none;align-items:center;gap:.8rem;justify-content:space-between;flex-wrap:wrap;
+}
+.keybox.show{display:flex}
+.keybox .k{font-family:Consolas,monospace;font-size:.86rem;color:#86efac;word-break:break-all}
+.hint{font-size:.78rem;color:var(--muted);margin-top:.5rem}
+
+/* modal */
+.overlay{
+  position:fixed;inset:0;background:#000a;backdrop-filter:blur(3px);
+  display:none;place-items:center;z-index:150;padding:1rem;
+}
+.overlay.show{display:grid}
+.modal{
+  width:min(94vw,420px);background:var(--surface);border:1px solid var(--b2);
+  border-radius:16px;padding:1.4rem;box-shadow:0 30px 70px -20px #000;
+}
+.modal h3{font-size:1.05rem;margin-bottom:.5rem}
+.modal p{font-size:.88rem;color:var(--muted);line-height:1.5}
+.modal .modal-actions{display:flex;justify-content:flex-end;gap:.6rem;margin-top:1.3rem}
+.modal .field{margin-top:.9rem}
+.modal .field label{display:block;font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:.35rem}
+.modal .field input{width:100%;min-width:0}
+.hidden{display:none!important}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <div><a href="/">← Dashboard</a></div>
-  <h2>Settings</h2>
-  <div class="card">
-    <h3 style="margin-top:0">API Keys</h3>
-    <div>
-      <input id="key-name" placeholder="Key name (ex: Postman)">
-      <button onclick="createKey()">Create Key</button>
-      <button style="margin-left:.4rem;background:#334155;color:#e2e8f0" onclick="logout()">Logout</button>
+  <div class="topbar">
+    <div class="brand">
+      <div class="logo">⚙️</div>
+      <div>
+        <h1>Settings</h1>
+        <div class="sub">Tech Monitoring</div>
+      </div>
     </div>
-    <div class="msg" id="msg"></div>
-    <table>
-      <thead><tr><th>Name</th><th>Prefix</th><th>Status</th><th>Created</th><th>Last Used</th></tr></thead>
-      <tbody id="rows"></tbody>
-    </table>
+    <div class="top-actions">
+      <a class="btn btn-ghost" href="/">← Dashboard</a>
+      <button class="btn btn-ghost" onclick="logout()">Logout</button>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <button class="tab active" id="tab-users" onclick="switchTab('users')">Users</button>
+    <button class="tab" id="tab-keys" onclick="switchTab('keys')">API Keys</button>
+    <button class="tab" id="tab-notify" onclick="switchTab('notify')">Notifications</button>
+  </div>
+
+  <!-- USERS -->
+  <section id="panel-users">
+    <div class="card" id="users-admin-card">
+      <div class="card-head">
+        <div>
+          <h2>Add a user</h2>
+          <p>Create a new account that can sign in to the dashboard. Grant admin rights to allow user and key management.</p>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="field">
+          <label>Username</label>
+          <input type="text" id="nu-username" placeholder="e.g. authpay" autocomplete="off">
+        </div>
+        <div class="field">
+          <label>Password</label>
+          <input type="password" id="nu-password" placeholder="min 6 characters" autocomplete="new-password">
+        </div>
+        <div class="field">
+          <label>Role</label>
+          <label class="toggle" style="height:40px">
+            <input type="checkbox" id="nu-admin">
+            <span class="switch"></span>
+            <span>Admin</span>
+          </label>
+        </div>
+        <div class="field">
+          <label>&nbsp;</label>
+          <button class="btn btn-primary" id="nu-submit" onclick="createUser()">+ Add User</button>
+        </div>
+      </div>
+      <div class="hint">Usernames must be at least 3 characters. Passwords at least 6.</div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h2>Accounts <span id="user-count" class="badge badge-user">0</span></h2>
+          <p>All users who can access this monitoring instance.</p>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>User</th><th>Role</th><th>Created</th><th style="text-align:right">Actions</th></tr></thead>
+          <tbody id="user-rows"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card hidden" id="users-noadmin-card">
+      <div class="empty">You need admin privileges to manage users.</div>
+    </div>
+  </section>
+
+  <!-- API KEYS -->
+  <section id="panel-keys" class="hidden">
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h2>Create API key</h2>
+          <p>Use API keys for programmatic access. The full key is shown only once at creation.</p>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="field">
+          <label>Key name</label>
+          <input type="text" id="key-name" placeholder="e.g. Postman, CI pipeline" autocomplete="off">
+        </div>
+        <div class="field">
+          <label>&nbsp;</label>
+          <button class="btn btn-primary" onclick="createKey()">+ Create Key</button>
+        </div>
+      </div>
+      <div class="keybox" id="keybox">
+        <div>
+          <div style="font-size:.74rem;color:var(--muted);text-transform:uppercase;letter-spacing:.6px">New API key — copy now</div>
+          <div class="k" id="keybox-val"></div>
+        </div>
+        <button class="btn btn-ghost btn-sm" onclick="copyKey()">Copy</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h2>Active keys <span id="key-count" class="badge badge-user">0</span></h2>
+          <p>Revoke a key to immediately block access for anything using it.</p>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Name</th><th>Prefix</th><th>Status</th><th>Created</th><th>Last used</th><th style="text-align:right">Actions</th></tr></thead>
+          <tbody id="key-rows"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- NOTIFICATIONS -->
+  <section id="panel-notify" class="hidden">
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h2>Add notification channel</h2>
+          <p>Create Slack, email, or webhook destinations here. Assign them to monitors when adding or editing a monitor on the dashboard.</p>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="field">
+          <label>Channel name</label>
+          <input type="text" id="nc-name" placeholder="e.g. Slack Ops" autocomplete="off">
+        </div>
+        <div class="field">
+          <label>Type</label>
+          <select id="nc-type" onchange="renderNotifyConfigFields()">
+            <option value="slack">Slack (webhook)</option>
+            <option value="email">Email (SMTP)</option>
+            <option value="webhook">Generic webhook</option>
+          </select>
+        </div>
+      </div>
+      <div class="config-grid" id="nc-config-fields"></div>
+      <div class="field" style="margin-top:.9rem">
+        <label>Notify on</label>
+        <div class="event-chips" id="nc-events">
+          <label class="event-chip on"><input type="checkbox" value="down" checked> Service down</label>
+          <label class="event-chip on"><input type="checkbox" value="up" checked> Service recovered</label>
+          <label class="event-chip on"><input type="checkbox" value="cert_expiry" checked> Certificate expiry</label>
+          <label class="event-chip on"><input type="checkbox" value="domain_expiry" checked> Domain expiry</label>
+        </div>
+      </div>
+      <div class="form-row" style="margin-top:1rem">
+        <label class="toggle">
+          <input type="checkbox" id="nc-enabled" checked>
+          <span class="switch"></span>
+          <span>Enabled</span>
+        </label>
+        <button class="btn btn-primary" id="nc-submit" onclick="saveNotification()">+ Add Channel</button>
+      </div>
+      <div class="hint">Channels are linked to monitors from the Add/Edit Monitor screen — not here.</div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h2>Channels <span id="notify-count" class="badge badge-user">0</span></h2>
+          <p>Configured destinations for uptime alerts.</p>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Name</th><th>Type</th><th>Events</th><th>Status</th><th style="text-align:right">Actions</th></tr></thead>
+          <tbody id="notify-rows"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- confirm modal -->
+<div class="overlay" id="overlay">
+  <div class="modal">
+    <h3 id="modal-title">Confirm</h3>
+    <p id="modal-text">Are you sure?</p>
+    <div id="modal-form" class="hidden">
+      <div class="field">
+        <label>New password (leave blank to keep current)</label>
+        <input type="password" id="edit-password" placeholder="min 6 characters" autocomplete="new-password">
+      </div>
+      <div class="field" id="edit-admin-wrap">
+        <label class="toggle">
+          <input type="checkbox" id="edit-admin">
+          <span class="switch"></span>
+          <span>Admin privileges</span>
+        </label>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-danger hidden" id="modal-confirm">Delete</button>
+      <button class="btn btn-primary hidden" id="modal-save">Save changes</button>
+    </div>
   </div>
 </div>
+
+<div class="toast" id="toast"></div>
+
 <script>
-async function ensureAuth(){
-  const s = await fetch("/api/auth/status").then(r=>r.json());
-  if (!s.logged_in){ location.href = "/login"; }
+let ME = null;
+let lastKey = "";
+let USERS = [];
+let NOTIFY_CHANNELS = [];
+let NOTIFY_EDIT_ID = null;
+
+const AVATAR_COLORS = ["#22c55e","#4f9cf9","#8b5cf6","#f59e0b","#ec4899","#14b8a6","#f97316"];
+function avatarColor(name){
+  let h = 0;
+  for (let i=0;i<name.length;i++) h = name.charCodeAt(i) + ((h<<5)-h);
+  return AVATAR_COLORS[Math.abs(h) % AVATAR_COLORS.length];
+}
+function esc(s){return (s??"").toString().replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
+
+function toast(msg, kind="ok"){
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.className = "toast show " + kind;
+  clearTimeout(t._t);
+  t._t = setTimeout(()=>{ t.className = "toast " + kind; }, 3200);
 }
 
+function switchTab(name){
+  ["users","keys","notify"].forEach(t=>{
+    document.getElementById("tab-"+t).classList.toggle("active", name===t);
+    document.getElementById("panel-"+t).classList.toggle("hidden", name!==t);
+  });
+}
+
+async function ensureAuth(){
+  const s = await fetch("/api/auth/status").then(r=>r.json()).catch(()=>({}));
+  if (!s.logged_in){ location.href = "/login"; return false; }
+  ME = s.user;
+  return true;
+}
+
+/* ---------- Users ---------- */
+async function loadUsers(){
+  const isAdmin = ME && ME.is_admin;
+  document.getElementById("users-admin-card").classList.toggle("hidden", !isAdmin);
+  document.getElementById("users-noadmin-card").classList.toggle("hidden", !!isAdmin);
+  if (!isAdmin){ document.getElementById("user-rows").innerHTML = ""; return; }
+
+  const res = await fetch("/api/settings/users");
+  if (!res.ok){ return; }
+  const users = await res.json();
+  USERS = users;
+  document.getElementById("user-count").textContent = users.length;
+  document.getElementById("user-rows").innerHTML = users.map(u=>{
+    const initial = (u.username[0]||"?").toUpperCase();
+    const role = u.is_admin
+      ? `<span class="badge badge-admin">Admin</span>`
+      : `<span class="badge badge-user">User</span>`;
+    const deleteBtn = u.is_self
+      ? ""
+      : `<button class="btn btn-danger btn-sm" data-action="delete-user" data-id="${u.id}">Delete</button>`;
+    return `<tr>
+      <td><div class="user-cell">
+        <span class="avatar" style="background:${avatarColor(u.username)}">${esc(initial)}</span>
+        <span>${esc(u.username)}${u.is_self ? '<span class="you-tag">YOU</span>' : ''}</span>
+      </div></td>
+      <td>${role}</td>
+      <td class="mono" style="color:var(--muted)">${esc(u.created_at||"-")}</td>
+      <td>
+        <div class="row-actions">
+          <button class="btn btn-ghost btn-sm" data-action="edit-user" data-id="${u.id}">Edit</button>
+          ${deleteBtn}
+        </div>
+      </td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="4"><div class="empty">No users yet</div></td></tr>`;
+}
+
+async function createUser(){
+  const username = document.getElementById("nu-username").value.trim();
+  const password = document.getElementById("nu-password").value;
+  const is_admin = document.getElementById("nu-admin").checked;
+  if (username.length < 3){ toast("Username must be at least 3 characters","err"); return; }
+  if (password.length < 6){ toast("Password must be at least 6 characters","err"); return; }
+  const btn = document.getElementById("nu-submit");
+  btn.disabled = true;
+  const res = await fetch("/api/settings/users",{
+    method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({username,password,is_admin})
+  });
+  const data = await res.json().catch(()=>({}));
+  btn.disabled = false;
+  if (!res.ok){ toast(data.error || "Could not create user","err"); return; }
+  toast(`User "${username}" created`,"ok");
+  document.getElementById("nu-username").value = "";
+  document.getElementById("nu-password").value = "";
+  document.getElementById("nu-admin").checked = false;
+  await loadUsers();
+}
+
+function askDeleteUser(id, name){
+  document.getElementById("modal-form").classList.add("hidden");
+  document.getElementById("modal-save").classList.add("hidden");
+  document.getElementById("modal-confirm").classList.remove("hidden");
+  openModal("Delete user", `Delete user "${name}"? This cannot be undone.`, async ()=>{
+    const res = await fetch(`/api/settings/users/${id}`,{method:"DELETE"});
+    const data = await res.json().catch(()=>({}));
+    if (!res.ok){ toast(data.error || "Could not delete user","err"); return; }
+    toast(`User "${name}" deleted`,"ok");
+    await loadUsers();
+  });
+}
+
+function openEditUser(id){
+  const u = USERS.find(x => x.id === id);
+  if (!u) return;
+  document.getElementById("modal-form").classList.remove("hidden");
+  document.getElementById("modal-confirm").classList.add("hidden");
+  document.getElementById("modal-save").classList.remove("hidden");
+  document.getElementById("edit-password").value = "";
+  document.getElementById("edit-admin").checked = !!u.is_admin;
+  document.getElementById("edit-admin-wrap").classList.toggle("hidden", u.is_self);
+  openModal(
+    `Edit user — ${u.username}`,
+    u.is_self ? "Update your password. You cannot remove your own admin role here." : "Change password and/or admin role.",
+    null
+  );
+  document.getElementById("modal-save").onclick = async ()=>{
+    const password = document.getElementById("edit-password").value;
+    const body = {};
+    if (password) body.password = password;
+    if (!u.is_self) body.is_admin = document.getElementById("edit-admin").checked;
+    if (!password && u.is_self){
+      toast("Enter a new password","err");
+      return;
+    }
+    const res = await fetch(`/api/settings/users/${id}`,{
+      method:"PUT",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify(body)
+    });
+    const data = await res.json().catch(()=>({}));
+    if (!res.ok){ toast(data.error || "Could not update user","err"); return; }
+    closeModal();
+    toast(`User "${u.username}" updated`,"ok");
+    await loadUsers();
+  };
+}
+
+/* ---------- API Keys ---------- */
 async function loadKeys(){
   const res = await fetch("/api/settings/api-keys");
   if (!res.ok){ return; }
   const keys = await res.json();
-  document.getElementById("rows").innerHTML = keys.map(k=>`
-    <tr>
-      <td>${k.name}</td>
-      <td class="mono">${k.key_prefix}...</td>
-      <td>${k.active ? "active" : "inactive"}</td>
-      <td>${k.created_at || "-"}</td>
-      <td>${k.last_used_at || "-"}</td>
-    </tr>
-  `).join("") || `<tr><td colspan="5">No API keys yet</td></tr>`;
+  document.getElementById("key-count").textContent = keys.length;
+  document.getElementById("key-rows").innerHTML = keys.map(k=>{
+    const status = k.active
+      ? `<span class="badge badge-on">Active</span>`
+      : `<span class="badge badge-off">Inactive</span>`;
+    return `<tr>
+      <td>${esc(k.name)}</td>
+      <td class="mono">${esc(k.key_prefix)}…</td>
+      <td>${status}</td>
+      <td class="mono" style="color:var(--muted)">${esc(k.created_at||"-")}</td>
+      <td class="mono" style="color:var(--muted)">${esc(k.last_used_at||"never")}</td>
+      <td style="text-align:right"><button class="btn btn-danger btn-sm" data-action="delete-key" data-id="${k.id}" data-name="${esc(k.name)}">Revoke</button></td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="6"><div class="empty">No API keys yet</div></td></tr>`;
 }
 
 async function createKey(){
   const name = document.getElementById("key-name").value.trim() || "default";
-  const res = await fetch("/api/settings/api-keys", {
-    method:"POST",
-    headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({name})
+  const res = await fetch("/api/settings/api-keys",{
+    method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({name})
   });
   const data = await res.json().catch(()=>({}));
-  if (!res.ok){
-    document.getElementById("msg").textContent = data.error || "Could not create key";
-    return;
-  }
-  document.getElementById("msg").textContent = `New API Key (copy now): ${data.api_key}`;
+  if (!res.ok){ toast(data.error || "Could not create key","err"); return; }
+  lastKey = data.api_key;
+  document.getElementById("keybox-val").textContent = data.api_key;
+  document.getElementById("keybox").classList.add("show");
   document.getElementById("key-name").value = "";
+  toast("API key created","ok");
   await loadKeys();
 }
 
+function copyKey(){
+  if (!lastKey) return;
+  navigator.clipboard.writeText(lastKey).then(()=>toast("Key copied to clipboard","ok"))
+    .catch(()=>toast("Copy failed — select manually","err"));
+}
+
+function askDeleteKey(id, name){
+  document.getElementById("modal-form").classList.add("hidden");
+  document.getElementById("modal-save").classList.add("hidden");
+  document.getElementById("modal-confirm").classList.remove("hidden");
+  openModal("Revoke API key", `Revoke key "${name}"? Anything using it will stop working immediately.`, async ()=>{
+    const res = await fetch(`/api/settings/api-keys/${id}`,{method:"DELETE"});
+    const data = await res.json().catch(()=>({}));
+    if (!res.ok){ toast(data.error || "Could not revoke key","err"); return; }
+    toast(`Key "${name}" revoked`,"ok");
+    await loadKeys();
+  });
+}
+
+/* ---------- Notifications ---------- */
+const NOTIFY_TYPE_BADGE = {slack:"badge-slack",email:"badge-email",webhook:"badge-webhook"};
+const NOTIFY_CONFIG_FIELDS = {
+  slack: [{id:"webhook_url", label:"Webhook URL", type:"text", placeholder:"https://hooks.slack.com/services/..."}],
+  email: [
+    {id:"to", label:"To address", type:"email", placeholder:"ops@company.com"},
+    {id:"from", label:"From address", type:"email", placeholder:"monitor@company.com"},
+    {id:"smtp_host", label:"SMTP host", type:"text", placeholder:"smtp.gmail.com"},
+    {id:"smtp_port", label:"SMTP port", type:"number", placeholder:"587"},
+    {id:"smtp_user", label:"SMTP username", type:"text", placeholder:"user@company.com"},
+    {id:"smtp_pass", label:"SMTP password", type:"password", placeholder:"app password"},
+  ],
+  webhook: [
+    {id:"url", label:"Webhook URL", type:"text", placeholder:"https://your-service.com/hooks/uptime"},
+    {id:"method", label:"HTTP method", type:"text", placeholder:"POST"},
+  ],
+};
+
+function renderNotifyConfigFields(values={}){
+  const type = document.getElementById("nc-type").value;
+  const fields = NOTIFY_CONFIG_FIELDS[type] || [];
+  document.getElementById("nc-config-fields").innerHTML = fields.map(f=>`
+    <div class="field">
+      <label>${f.label}</label>
+      <input type="${f.type}" id="nc-cfg-${f.id}" placeholder="${esc(f.placeholder||'')}"
+        value="${esc(values[f.id]||'')}" ${f.type==="number"?"min=\"1\"":""}>
+    </div>
+  `).join("");
+  if (type === "email"){
+    document.getElementById("nc-config-fields").insertAdjacentHTML("beforeend", `
+      <div class="field" style="justify-content:flex-end">
+        <label class="toggle" style="height:40px;margin-top:1.4rem">
+          <input type="checkbox" id="nc-cfg-use_tls" ${values.use_tls!==false?"checked":""}>
+          <span class="switch"></span>
+          <span>Use TLS</span>
+        </label>
+      </div>`);
+  }
+}
+
+function getSelectedNotifyEvents(){
+  return [...document.querySelectorAll("#nc-events input:checked")].map(el=>el.value);
+}
+
+function readNotifyForm(){
+  const type = document.getElementById("nc-type").value;
+  const config = {};
+  (NOTIFY_CONFIG_FIELDS[type]||[]).forEach(f=>{
+    const el = document.getElementById("nc-cfg-"+f.id);
+    if (!el) return;
+    config[f.id] = f.type === "number" ? Number(el.value||0) : el.value.trim();
+  });
+  if (type === "email"){
+    const tls = document.getElementById("nc-cfg-use_tls");
+    config.use_tls = tls ? tls.checked : true;
+  }
+  return {
+    name: document.getElementById("nc-name").value.trim(),
+    type,
+    config,
+    events: getSelectedNotifyEvents(),
+    enabled: document.getElementById("nc-enabled").checked,
+  };
+}
+
+function resetNotifyForm(){
+  NOTIFY_EDIT_ID = null;
+  document.getElementById("nc-name").value = "";
+  document.getElementById("nc-type").value = "slack";
+  document.getElementById("nc-enabled").checked = true;
+  document.getElementById("nc-submit").textContent = "+ Add Channel";
+  document.querySelectorAll("#nc-events input").forEach(el=>{ el.checked = true; el.closest(".event-chip").classList.add("on"); });
+  renderNotifyConfigFields();
+}
+
+async function loadNotifications(){
+  const res = await fetch("/api/settings/notifications");
+  if (!res.ok) return;
+  NOTIFY_CHANNELS = await res.json();
+  document.getElementById("notify-count").textContent = NOTIFY_CHANNELS.length;
+  document.getElementById("notify-rows").innerHTML = NOTIFY_CHANNELS.map(ch=>{
+    const badge = NOTIFY_TYPE_BADGE[ch.type] || "badge-user";
+    const events = (ch.events||[]).map(e=>{
+      const labels = {down:"Down", up:"Up", cert_expiry:"Cert", domain_expiry:"Domain"};
+      return `<span class="badge badge-user">${labels[e]||e}</span>`;
+    }).join(" ");
+    const status = ch.enabled
+      ? `<span class="badge badge-on">Enabled</span>`
+      : `<span class="badge badge-off">Disabled</span>`;
+    return `<tr>
+      <td>${esc(ch.name)}</td>
+      <td><span class="badge ${badge}">${esc(ch.type)}</span></td>
+      <td>${events || "-"}</td>
+      <td>${status}</td>
+      <td>
+        <div class="row-actions">
+          <button class="btn btn-ghost btn-sm" data-action="test-notify" data-id="${ch.id}">Test</button>
+          <button class="btn btn-ghost btn-sm" data-action="edit-notify" data-id="${ch.id}">Edit</button>
+          <button class="btn btn-danger btn-sm" data-action="delete-notify" data-id="${ch.id}">Delete</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="5"><div class="empty">No notification channels yet</div></td></tr>`;
+}
+
+async function saveNotification(){
+  const body = readNotifyForm();
+  if (!body.name){ toast("Channel name is required","err"); return; }
+  if (!body.events.length){ toast("Select at least one event","err"); return; }
+  const btn = document.getElementById("nc-submit");
+  btn.disabled = true;
+  const url = NOTIFY_EDIT_ID ? `/api/settings/notifications/${NOTIFY_EDIT_ID}` : "/api/settings/notifications";
+  const method = NOTIFY_EDIT_ID ? "PUT" : "POST";
+  const res = await fetch(url, {method, headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)});
+  const data = await res.json().catch(()=>({}));
+  btn.disabled = false;
+  if (!res.ok){ toast(data.error || "Could not save channel","err"); return; }
+  toast(NOTIFY_EDIT_ID ? "Channel updated" : "Channel added","ok");
+  resetNotifyForm();
+  await loadNotifications();
+}
+
+function startEditNotification(id){
+  const ch = NOTIFY_CHANNELS.find(x=>x.id===id);
+  if (!ch) return;
+  NOTIFY_EDIT_ID = id;
+  const cfg = {...(ch.config||{})};
+  if (ch.type === "slack") cfg.webhook_url = "";
+  if (ch.type === "webhook") cfg.url = "";
+  if (ch.type === "email") cfg.smtp_pass = "";
+  document.getElementById("nc-name").value = ch.name;
+  document.getElementById("nc-type").value = ch.type;
+  document.getElementById("nc-enabled").checked = !!ch.enabled;
+  document.getElementById("nc-submit").textContent = "Save Changes";
+  renderNotifyConfigFields(cfg);
+  document.querySelectorAll("#nc-events input").forEach(el=>{
+    const on = (ch.events||[]).includes(el.value);
+    el.checked = on;
+    el.closest(".event-chip").classList.toggle("on", on);
+  });
+  switchTab("notify");
+  document.getElementById("nc-name").scrollIntoView({behavior:"smooth", block:"center"});
+}
+
+async function testNotification(id){
+  const ch = NOTIFY_CHANNELS.find(x=>x.id===id);
+  const res = await fetch(`/api/settings/notifications/${id}/test`, {method:"POST"});
+  const data = await res.json().catch(()=>({}));
+  if (!res.ok){ toast(data.error || "Test failed","err"); return; }
+  toast(`Test sent to "${ch?.name||'channel'}"`,"ok");
+}
+
+function askDeleteNotification(id){
+  const ch = NOTIFY_CHANNELS.find(x=>x.id===id);
+  document.getElementById("modal-form").classList.add("hidden");
+  document.getElementById("modal-save").classList.add("hidden");
+  document.getElementById("modal-confirm").classList.remove("hidden");
+  openModal("Delete channel", `Delete "${ch?.name||'channel'}"? Alerts will stop going to this destination.`, async ()=>{
+    const res = await fetch(`/api/settings/notifications/${id}`, {method:"DELETE"});
+    const data = await res.json().catch(()=>({}));
+    if (!res.ok){ toast(data.error || "Could not delete channel","err"); return; }
+    toast("Channel deleted","ok");
+    if (NOTIFY_EDIT_ID === id) resetNotifyForm();
+    await loadNotifications();
+  });
+}
+
+/* ---------- Modal ---------- */
+let _confirmFn = null;
+function openModal(title, text, onConfirm){
+  document.getElementById("modal-title").textContent = title;
+  document.getElementById("modal-text").textContent = text;
+  _confirmFn = onConfirm;
+  document.getElementById("overlay").classList.add("show");
+}
+function closeModal(){
+  document.getElementById("overlay").classList.remove("show");
+  document.getElementById("modal-form").classList.add("hidden");
+  document.getElementById("modal-save").classList.add("hidden");
+  document.getElementById("modal-confirm").classList.add("hidden");
+  document.getElementById("modal-save").onclick = null;
+  _confirmFn = null;
+}
+document.getElementById("modal-confirm").addEventListener("click", async ()=>{
+  const fn = _confirmFn;
+  closeModal();
+  if (fn) await fn();
+});
+document.getElementById("overlay").addEventListener("click", e=>{
+  if (e.target.id === "overlay") closeModal();
+});
+
+document.getElementById("user-rows").addEventListener("click", e=>{
+  const btn = e.target.closest("[data-action]");
+  if (!btn) return;
+  const id = Number(btn.dataset.id);
+  if (btn.dataset.action === "edit-user") openEditUser(id);
+  if (btn.dataset.action === "delete-user"){
+    const u = USERS.find(x => x.id === id);
+    if (u) askDeleteUser(id, u.username);
+  }
+});
+
+document.getElementById("key-rows").addEventListener("click", e=>{
+  const btn = e.target.closest("[data-action=delete-key]");
+  if (!btn) return;
+  askDeleteKey(Number(btn.dataset.id), btn.dataset.name);
+});
+
+document.getElementById("notify-rows").addEventListener("click", e=>{
+  const btn = e.target.closest("[data-action]");
+  if (!btn) return;
+  const id = Number(btn.dataset.id);
+  if (btn.dataset.action === "test-notify") testNotification(id);
+  if (btn.dataset.action === "edit-notify") startEditNotification(id);
+  if (btn.dataset.action === "delete-notify") askDeleteNotification(id);
+});
+
+document.getElementById("nc-events").addEventListener("change", e=>{
+  const chip = e.target.closest(".event-chip");
+  if (!chip) return;
+  chip.classList.toggle("on", e.target.checked);
+});
+
 async function logout(){
-  await fetch("/api/auth/logout", {method:"POST"});
+  await fetch("/api/auth/logout",{method:"POST"});
   location.href = "/login";
 }
 
-ensureAuth().then(loadKeys);
+(async function init(){
+  if (!await ensureAuth()) return;
+  renderNotifyConfigFields();
+  await Promise.all([loadUsers(), loadKeys(), loadNotifications()]);
+})();
 </script>
 </body>
 </html>

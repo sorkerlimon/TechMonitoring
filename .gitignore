@@ -20,9 +20,8 @@ Thumbs.db
 data/*.db
 data/*.sqlite
 data/*.sqlite3
-*.db
-*.sqlite
-*.sqlite3
+data/*.log
+*.log
 
 # Secrets
 *.pem

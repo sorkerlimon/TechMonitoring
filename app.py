@@ -1,17 +1,18 @@
-"""
-Uptime Monitor - Flask Backend
-Run: python app.py
-Dashboard: http://localhost:8080
-"""
-
 import ssl, socket, time, json, threading, datetime, sqlite3, os, re, secrets, hashlib, hmac
-import urllib.request
+import urllib.request, urllib.error
 from pathlib import Path
 from urllib.parse import urlparse
 from flask import Flask, request, jsonify, send_from_directory, session, redirect
+from werkzeug.exceptions import HTTPException
+
+from database import db, DB_LOCK, DB_FILE, init_db
+import notification
+from techlog import setup_logging, get_logger
+
+setup_logging()
+log = get_logger("app")
 
 # ── Config ─────────────────────────────────────────────────────────────────────
-DB_FILE  = os.environ.get("DB_FILE", "uptime.db")
 PORT     = 8080
 STATIC   = Path(__file__).parent / "static"
 STATIC.mkdir(exist_ok=True)
@@ -20,70 +21,9 @@ app      = Flask(__name__, static_folder=str(STATIC))
 app.secret_key = os.environ.get("UPTIME_SECRET_KEY", "dev-secret-change-this")
 app.permanent_session_lifetime = datetime.timedelta(hours=1)
 app.config["SESSION_REFRESH_EACH_REQUEST"] = False
-DB_LOCK  = threading.Lock()
 THREADS  = {}   # service_id → thread stop_event
 BOOT_LOCK = threading.Lock()
 BOOTSTRAPPED = False
-
-# ── DB ─────────────────────────────────────────────────────────────────────────
-
-def db():
-    c = sqlite3.connect(DB_FILE, check_same_thread=False)
-    c.row_factory = sqlite3.Row
-    return c
-
-def init_db():
-    with DB_LOCK:
-        c = db()
-        c.executescript("""
-            CREATE TABLE IF NOT EXISTS services (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                name        TEXT    NOT NULL,
-                url         TEXT    NOT NULL UNIQUE,
-                interval    INTEGER NOT NULL DEFAULT 60,
-                retries     INTEGER NOT NULL DEFAULT 0,
-                timeout     INTEGER NOT NULL DEFAULT 30,
-                method      TEXT    NOT NULL DEFAULT 'GET',
-                enabled     INTEGER NOT NULL DEFAULT 1,
-                paused      INTEGER NOT NULL DEFAULT 0,
-                created_at  TEXT    DEFAULT (datetime('now'))
-            );
-            CREATE TABLE IF NOT EXISTS checks (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                service_id  INTEGER NOT NULL REFERENCES services(id) ON DELETE CASCADE,
-                ts          REAL    NOT NULL,
-                is_up       INTEGER NOT NULL,
-                response_ms REAL    NOT NULL,
-                status_code INTEGER
-            );
-            CREATE TABLE IF NOT EXISTS cert_info (
-                service_id    INTEGER PRIMARY KEY REFERENCES services(id) ON DELETE CASCADE,
-                ssl_expiry    TEXT,
-                domain_expiry TEXT,
-                updated_at    TEXT
-            );
-            CREATE TABLE IF NOT EXISTS users (
-                id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                username      TEXT NOT NULL UNIQUE,
-                password_hash TEXT NOT NULL,
-                is_admin      INTEGER NOT NULL DEFAULT 0,
-                created_at    TEXT DEFAULT (datetime('now'))
-            );
-            CREATE TABLE IF NOT EXISTS api_keys (
-                id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                name          TEXT NOT NULL,
-                key_hash      TEXT NOT NULL UNIQUE,
-                key_prefix    TEXT NOT NULL,
-                active        INTEGER NOT NULL DEFAULT 1,
-                created_by    INTEGER REFERENCES users(id) ON DELETE SET NULL,
-                created_at    TEXT DEFAULT (datetime('now')),
-                last_used_at  TEXT
-            );
-            CREATE INDEX IF NOT EXISTS idx_checks_svc ON checks(service_id, ts);
-            CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
-        """)
-        c.commit(); c.close()
-    print(f"[db] Ready → {DB_FILE}")
 
 def has_admin_user():
     ensure_runtime_started()
@@ -106,6 +46,22 @@ def current_user():
         r = c.execute("SELECT id, username, is_admin FROM users WHERE id=?", (uid,)).fetchone()
         c.close()
     return dict(r) if r else None
+
+notification.configure(db, DB_LOCK, current_user)
+notification.register_routes(app)
+
+@app.after_request
+def log_api_errors(response):
+    if request.path.startswith("/api/") and response.status_code >= 400:
+        log.warning("API %s %s → %s", request.method, request.path, response.status_code)
+    return response
+
+@app.errorhandler(Exception)
+def log_unhandled_error(e):
+    if isinstance(e, HTTPException):
+        return e
+    log.exception("Unhandled error on %s %s: %s", request.method, request.path, e)
+    return jsonify({"error": "internal server error"}), 500
 
 def api_key_from_request():
     k = request.headers.get("X-API-Key")
@@ -145,8 +101,10 @@ def ensure_runtime_started():
         if BOOTSTRAPPED:
             return
         init_db()
+        notification.migrate_channels()
         start_all()
         BOOTSTRAPPED = True
+        log.info("Runtime started — monitors active")
 
 def make_password_hash(password):
     salt = secrets.token_hex(16)
@@ -263,7 +221,7 @@ def get_domain_expiry(hostname):
             if m:
                 return m.group(0)
     except Exception as e:
-        print(f"[WHOIS:{hostname}] {e}")
+        log.warning("WHOIS lookup failed for %s: %s", hostname, e)
     return None
 
 def days_until(s):
@@ -699,38 +657,53 @@ def last_check_row(sid):
 # ── Monitor thread ─────────────────────────────────────────────────────────────
 
 def monitor_loop(sid, name, url, interval, retries, timeout, method, stop_evt):
+    log.info("Monitor started id=%s name=%s url=%s interval=%ss", sid, name, url, interval)
     hostname = urlparse(url).hostname
     ssl_e  = get_ssl_expiry(hostname)
     dom_e  = get_domain_expiry(hostname)
     save_cert(sid, ssl_e, dom_e)
+    notification.check_expiry_alerts(sid, name, url, ssl_e, dom_e)
     last_cert = time.time()
-    fail_count = 0
 
-    while not stop_evt.is_set():
-        is_up, ms, code = check_url(url, timeout, method)
+    prev = last_check_row(sid)
+    if prev is not None:
+        notification.seed_service_state(sid, bool(prev["is_up"]))
 
-        # Retry logic
-        if not is_up and retries > 0:
-            for _ in range(retries):
-                time.sleep(2)
-                is_up, ms, code = check_url(url, timeout, method)
-                if is_up: break
+    try:
+        while not stop_evt.is_set():
+            is_up, ms, code = check_url(url, timeout, method)
 
-        ts = time.time()
-        with DB_LOCK:
-            c = db()
-            c.execute("""INSERT INTO checks(service_id,ts,is_up,response_ms,status_code)
-                         VALUES(?,?,?,?,?)""",
-                      (sid, ts, 1 if is_up else 0, ms, code))
-            c.commit(); c.close()
+            # Retry logic
+            if not is_up and retries > 0:
+                for _ in range(retries):
+                    time.sleep(2)
+                    is_up, ms, code = check_url(url, timeout, method)
+                    if is_up: break
 
-        print(f"  [{name}] {'UP  ' if is_up else 'DOWN'} {ms:7.1f}ms {code or ''}")
+            ts = time.time()
+            with DB_LOCK:
+                c = db()
+                c.execute("""INSERT INTO checks(service_id,ts,is_up,response_ms,status_code)
+                             VALUES(?,?,?,?,?)""",
+                          (sid, ts, 1 if is_up else 0, ms, code))
+                c.commit(); c.close()
 
-        if time.time() - last_cert > 21600:
-            save_cert(sid, get_ssl_expiry(hostname), get_domain_expiry(hostname))
-            last_cert = time.time()
+            log.debug("[%s] %s %7.1fms code=%s", name, "UP" if is_up else "DOWN", ms, code or "-")
 
-        stop_evt.wait(interval)
+            notification.handle_check_result(sid, is_up, name, url, status_code=code, response_ms=ms)
+
+            if time.time() - last_cert > 21600:
+                ssl_e = get_ssl_expiry(hostname)
+                dom_e = get_domain_expiry(hostname)
+                save_cert(sid, ssl_e, dom_e)
+                notification.check_expiry_alerts(sid, name, url, ssl_e, dom_e)
+                last_cert = time.time()
+
+            stop_evt.wait(interval)
+    except Exception as e:
+        log.exception("Monitor crashed id=%s name=%s: %s", sid, name, e)
+    finally:
+        log.info("Monitor stopped id=%s name=%s", sid, name)
 
 def start_service(sid):
     with DB_LOCK:
@@ -741,6 +714,8 @@ def start_service(sid):
     if not r: return
     if sid in THREADS:
         THREADS[sid].set()
+        del THREADS[sid]
+    notification.clear_service_state(sid)
     evt = threading.Event()
     THREADS[sid] = evt
     t = threading.Thread(target=monitor_loop,
@@ -753,6 +728,7 @@ def stop_service(sid):
     if sid in THREADS:
         THREADS[sid].set()
         del THREADS[sid]
+    notification.clear_service_state(sid)
 
 def start_all():
     with DB_LOCK:
@@ -800,6 +776,7 @@ def build_service(sid=None):
             "domain_days":  days_until(dom_e),
             "heartbeat":    heartbeat_bars(r["id"]),
             "history":      history_2h(r["id"]),
+            "notification_channels": notification.get_service_channel_ids(r["id"]),
         })
     return result[0] if (sid and result) else result
 
@@ -881,6 +858,133 @@ def api_create_key():
     name = (d.get("name") or "default").strip()[:80] or "default"
     raw, prefix = issue_api_key(name=name, created_by=u["id"])
     return jsonify({"ok": True, "name": name, "key_prefix": prefix, "api_key": raw})
+
+@app.route("/api/settings/api-keys/<int:key_id>", methods=["DELETE"])
+def api_delete_key(key_id):
+    u = current_user()
+    if not u:
+        return jsonify({"error": "login required"}), 401
+    with DB_LOCK:
+        c = db()
+        row = c.execute("SELECT id FROM api_keys WHERE id=?", (key_id,)).fetchone()
+        if not row:
+            c.close()
+            return jsonify({"error": "key not found"}), 404
+        c.execute("DELETE FROM api_keys WHERE id=?", (key_id,))
+        c.commit()
+        c.close()
+    return jsonify({"ok": True})
+
+@app.route("/api/settings/users", methods=["GET"])
+def api_list_users():
+    u = current_user()
+    if not u:
+        return jsonify({"error": "login required"}), 401
+    if not u["is_admin"]:
+        return jsonify({"error": "admin privileges required"}), 403
+    with DB_LOCK:
+        c = db()
+        rows = c.execute("""SELECT id, username, is_admin, created_at
+                            FROM users ORDER BY id""").fetchall()
+        c.close()
+    return jsonify([{
+        "id": r["id"],
+        "username": r["username"],
+        "is_admin": bool(r["is_admin"]),
+        "created_at": r["created_at"],
+        "is_self": r["id"] == u["id"],
+    } for r in rows])
+
+@app.route("/api/settings/users", methods=["POST"])
+def api_create_user():
+    u = current_user()
+    if not u:
+        return jsonify({"error": "login required"}), 401
+    if not u["is_admin"]:
+        return jsonify({"error": "admin privileges required"}), 403
+    d = request.json or {}
+    username = (d.get("username") or "").strip()
+    password = d.get("password") or ""
+    is_admin = 1 if d.get("is_admin") else 0
+    if len(username) < 3 or len(password) < 6:
+        return jsonify({"error": "username >= 3 and password >= 6 required"}), 400
+    pw_hash = make_password_hash(password)
+    with DB_LOCK:
+        c = db()
+        try:
+            cur = c.execute("""INSERT INTO users(username, password_hash, is_admin)
+                               VALUES(?,?,?)""", (username, pw_hash, is_admin))
+            uid = cur.lastrowid
+            c.commit()
+        except sqlite3.IntegrityError:
+            c.close()
+            return jsonify({"error": "username already exists"}), 409
+        c.close()
+    return jsonify({"ok": True, "id": uid, "username": username, "is_admin": bool(is_admin)})
+
+@app.route("/api/settings/users/<int:user_id>", methods=["PUT"])
+def api_update_user(user_id):
+    u = current_user()
+    if not u:
+        return jsonify({"error": "login required"}), 401
+    if user_id != u["id"] and not u["is_admin"]:
+        return jsonify({"error": "admin privileges required"}), 403
+    d = request.json or {}
+    password = d.get("password") or ""
+    if "is_admin" in d and not u["is_admin"]:
+        return jsonify({"error": "admin privileges required"}), 403
+    is_admin = 1 if d.get("is_admin") else 0 if "is_admin" in d else None
+
+    with DB_LOCK:
+        c = db()
+        target = c.execute("SELECT id, is_admin FROM users WHERE id=?", (user_id,)).fetchone()
+        if not target:
+            c.close()
+            return jsonify({"error": "user not found"}), 404
+        if is_admin is not None and target["is_admin"] and not is_admin:
+            admin_count = c.execute("SELECT COUNT(*) n FROM users WHERE is_admin=1").fetchone()["n"]
+            if admin_count <= 1:
+                c.close()
+                return jsonify({"error": "cannot remove the last admin"}), 400
+        if password:
+            if len(password) < 6:
+                c.close()
+                return jsonify({"error": "password must be at least 6 characters"}), 400
+            c.execute("UPDATE users SET password_hash=? WHERE id=?",
+                      (make_password_hash(password), user_id))
+        if is_admin is not None:
+            c.execute("UPDATE users SET is_admin=? WHERE id=?", (is_admin, user_id))
+        if not password and is_admin is None:
+            c.close()
+            return jsonify({"error": "nothing to update"}), 400
+        c.commit()
+        c.close()
+    return jsonify({"ok": True})
+
+@app.route("/api/settings/users/<int:user_id>", methods=["DELETE"])
+def api_delete_user(user_id):
+    u = current_user()
+    if not u:
+        return jsonify({"error": "login required"}), 401
+    if not u["is_admin"]:
+        return jsonify({"error": "admin privileges required"}), 403
+    if user_id == u["id"]:
+        return jsonify({"error": "you cannot delete your own account"}), 400
+    with DB_LOCK:
+        c = db()
+        target = c.execute("SELECT id, is_admin FROM users WHERE id=?", (user_id,)).fetchone()
+        if not target:
+            c.close()
+            return jsonify({"error": "user not found"}), 404
+        if target["is_admin"]:
+            admin_count = c.execute("SELECT COUNT(*) n FROM users WHERE is_admin=1").fetchone()["n"]
+            if admin_count <= 1:
+                c.close()
+                return jsonify({"error": "cannot delete the last admin"}), 400
+        c.execute("DELETE FROM users WHERE id=?", (user_id,))
+        c.commit()
+        c.close()
+    return jsonify({"ok": True})
 
 @app.route("/api/services", methods=["GET"])
 def api_list():
@@ -1023,9 +1127,12 @@ def api_add():
                             (name, url, interval, retries, timeout, method))
             sid = cur.lastrowid
             c.commit(); c.close()
+        notification.set_service_channels(sid, d.get("notification_channels", []))
         start_service(sid)
+        log.info("Monitor created id=%s name=%s url=%s", sid, name, url)
         return jsonify({"ok": True, "id": sid})
     except sqlite3.IntegrityError:
+        log.warning("Monitor create failed — duplicate URL: %s", url)
         return jsonify({"error": "URL already exists"}), 409
 
 @app.route("/api/services/<int:sid>", methods=["PUT"])
@@ -1038,8 +1145,11 @@ def api_edit(sid):
                   (d["name"], d["url"], d["interval"], d["retries"],
                    d["timeout"], d.get("method","GET"), sid))
         c.commit(); c.close()
+    if "notification_channels" in d:
+        notification.set_service_channels(sid, d.get("notification_channels", []))
     stop_service(sid)
     start_service(sid)
+    log.info("Monitor updated id=%s", sid)
     return jsonify({"ok": True})
 
 @app.route("/api/services/<int:sid>", methods=["DELETE"])
@@ -1051,6 +1161,7 @@ def api_delete(sid):
         c.execute("DELETE FROM cert_info WHERE service_id=?", (sid,))
         c.execute("DELETE FROM services  WHERE id=?", (sid,))
         c.commit(); c.close()
+    log.info("Monitor deleted id=%s", sid)
     return jsonify({"ok": True})
 
 @app.route("/api/services/<int:sid>/pause", methods=["POST"])
@@ -1103,5 +1214,5 @@ def settings_page():
 
 if __name__ == "__main__":
     ensure_runtime_started()
-    print(f"\n  Uptime Monitor running → http://localhost:{PORT}\n")
+    log.info("Uptime Monitor running → http://localhost:%s", PORT)
     app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False)
