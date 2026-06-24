@@ -180,12 +180,166 @@ def _fmt_date(d: datetime.date) -> str:
     return d.strftime("%d %b %Y")
 
 
+# Premium palette
+_NAVY = (15, 23, 42)
+_NAVY_MID = (30, 41, 59)
+_ACCENT = (37, 99, 235)
+_SLATE = (100, 116, 139)
+_MUTED = (148, 163, 184)
+_LIGHT = (248, 250, 252)
+_ROW_ALT = (241, 245, 249)
+_BORDER = (226, 232, 240)
+_WHITE = (255, 255, 255)
+_TEXT = (30, 41, 59)
+_SUCCESS = (22, 163, 74)
+_WARN = (217, 119, 6)
+
+
 class _ReportPDF(FPDF):
+    def __init__(self):
+        super().__init__()
+        self.set_margins(14, 14, 14)
+
     def footer(self):
-        self.set_y(-15)
+        self.set_y(-14)
+        self.set_draw_color(*_BORDER)
+        self.line(14, self.get_y(), 196, self.get_y())
+        self.set_font("Helvetica", "", 7)
+        self.set_text_color(*_MUTED)
+        self.cell(95, 8, "Tech Monitoring  |  Confidential", align="L")
+        self.cell(95, 8, f"Page {self.page_no()}/{{nb}}", align="R")
+
+    def _draw_cover(self, range_label: str, generated: str, services_stats: list[dict]):
+        self.add_page()
+        self.set_fill_color(*_NAVY)
+        self.rect(0, 0, 210, 58, style="F")
+        self.set_fill_color(*_ACCENT)
+        self.rect(0, 58, 210, 1.2, style="F")
+
+        self.set_y(20)
+        self.set_text_color(*_WHITE)
+        self.set_font("Helvetica", "B", 24)
+        self.cell(0, 11, "TECH MONITORING", align="C", new_x="LMARGIN", new_y="NEXT")
+        self.set_font("Helvetica", "", 11)
+        self.set_text_color(186, 198, 214)
+        self.cell(0, 7, "Uptime & Performance Report", align="C", new_x="LMARGIN", new_y="NEXT")
+
+        self.set_y(72)
+        box_w = 88
+        gap = 6
+        x1, x2 = 14, 14 + box_w + gap
+        for x, label, value in (
+            (x1, "Report Period", range_label),
+            (x2, "Generated", generated),
+        ):
+            self.set_fill_color(*_LIGHT)
+            self.set_draw_color(*_BORDER)
+            self.rect(x, 72, box_w, 22, style="FD")
+            self.set_xy(x + 5, 76)
+            self.set_font("Helvetica", "", 7)
+            self.set_text_color(*_SLATE)
+            self.cell(box_w - 10, 4, label.upper(), new_x="LMARGIN", new_y="NEXT")
+            self.set_x(x + 5)
+            self.set_font("Helvetica", "B", 11)
+            self.set_text_color(*_NAVY)
+            self.cell(box_w - 10, 7, value, new_x="LMARGIN", new_y="NEXT")
+
+        self.set_y(102)
+        self.set_font("Helvetica", "B", 9)
+        self.set_text_color(*_ACCENT)
+        self.cell(0, 6, "SERVICES INCLUDED", new_x="LMARGIN", new_y="NEXT")
+        self.set_draw_color(*_BORDER)
+        self.line(14, self.get_y() + 1, 196, self.get_y() + 1)
+        self.ln(5)
+
+        self.set_font("Helvetica", "", 10)
+        self.set_text_color(*_TEXT)
+        for i, stats in enumerate(services_stats):
+            self.set_fill_color(*(_ROW_ALT if i % 2 else _WHITE))
+            y = self.get_y()
+            self.rect(14, y, 182, 8, style="F")
+            self.set_xy(18, y + 2)
+            self.set_font("Helvetica", "B", 9)
+            self.cell(50, 5, _safe_text(stats["name"]))
+            self.set_font("Helvetica", "", 8)
+            self.set_text_color(*_SLATE)
+            self.cell(0, 5, _safe_text(stats["url"]), new_x="LMARGIN", new_y="NEXT")
+            self.ln(2)
+
+    def _draw_service_header(self, stats: dict):
+        y = self.get_y()
+        self.set_fill_color(*_NAVY_MID)
+        self.rect(14, y, 182, 20, style="F")
+        self.set_xy(18, y + 4)
+        self.set_font("Helvetica", "B", 14)
+        self.set_text_color(*_WHITE)
+        self.cell(0, 7, _safe_text(stats["name"]), new_x="LMARGIN", new_y="NEXT")
+        self.set_xy(18, y + 12)
         self.set_font("Helvetica", "", 8)
-        self.set_text_color(120, 120, 120)
-        self.cell(0, 10, f"Page {self.page_no()}/{{nb}}", align="C")
+        self.set_text_color(186, 198, 214)
+        self.cell(0, 5, _safe_text(stats["url"]), new_x="LMARGIN", new_y="NEXT")
+        self.set_y(y + 26)
+
+    def _draw_kpi_row(self, stats: dict):
+        uptime = stats["range_uptime_pct"]
+        uptime_color = _SUCCESS if uptime >= 99.9 else (_WARN if uptime >= 95 else (220, 38, 38))
+        boxes = [
+            ("Overall Uptime", f"{uptime:.2f}%", uptime_color),
+            ("Avg Response", f"{stats['range_avg_response_ms']:.0f} ms", _NAVY),
+            ("Peaks > 1000ms", str(stats["peaks_over_1000"]), _NAVY),
+        ]
+        w = 58
+        gap = 4
+        y = self.get_y()
+        for i, (label, value, color) in enumerate(boxes):
+            x = 14 + i * (w + gap)
+            self.set_fill_color(*_WHITE)
+            self.set_draw_color(*_BORDER)
+            self.rect(x, y, w, 24, style="FD")
+            self.set_fill_color(*_ACCENT)
+            self.rect(x, y, w, 1.5, style="F")
+            self.set_xy(x + 4, y + 5)
+            self.set_font("Helvetica", "", 7)
+            self.set_text_color(*_SLATE)
+            self.cell(w - 8, 4, label.upper(), new_x="LMARGIN", new_y="NEXT")
+            self.set_xy(x + 4, y + 12)
+            self.set_font("Helvetica", "B", 14)
+            self.set_text_color(*color)
+            self.cell(w - 8, 8, value, new_x="LMARGIN", new_y="NEXT")
+        self.set_y(y + 30)
+
+    def _section_title(self, title: str):
+        self.ln(2)
+        self.set_font("Helvetica", "B", 8)
+        self.set_text_color(*_ACCENT)
+        self.cell(0, 5, title.upper(), new_x="LMARGIN", new_y="NEXT")
+        self.set_draw_color(*_BORDER)
+        y = self.get_y()
+        self.line(14, y, 196, y)
+        self.ln(4)
+
+    def _metric_row(self, label: str, value: str, alt: bool = False):
+        y = self.get_y()
+        h = 9
+        if alt:
+            self.set_fill_color(*_ROW_ALT)
+            self.rect(14, y, 182, h, style="F")
+        self.set_xy(18, y + 2.5)
+        self.set_font("Helvetica", "", 9)
+        self.set_text_color(*_TEXT)
+        self.cell(110, 5, label)
+        self.set_font("Helvetica", "B", 9)
+        self.set_text_color(*_NAVY_MID)
+        self.cell(74, 5, _safe_text(value), align="R", new_x="LMARGIN", new_y="NEXT")
+        self.set_y(y + h)
+
+    def _draw_metrics_table(self, sections: list[tuple[str, list[tuple[str, str]]]]):
+        row_idx = 0
+        for section_title, rows in sections:
+            self._section_title(section_title)
+            for label, value in rows:
+                self._metric_row(label, value, alt=row_idx % 2 == 0)
+                row_idx += 1
 
 
 def build_report_pdf(
@@ -199,74 +353,46 @@ def build_report_pdf(
 
     pdf = _ReportPDF()
     pdf.alias_nb_pages()
-    pdf.set_auto_page_break(auto=True, margin=20)
+    pdf.set_auto_page_break(auto=True, margin=18)
 
     range_label = f"{_fmt_date(start_date)} - {_fmt_date(end_date)}"
-    generated = datetime.datetime.now().strftime("%d %b %Y %H:%M")
-
-    for idx, stats in enumerate(services_stats):
-        pdf.add_page()
-        pdf.set_text_color(30, 30, 30)
-
-        if idx == 0:
-            pdf.set_font("Helvetica", "B", 18)
-            pdf.cell(0, 10, "Tech Monitoring Report", ln=True)
-
-            pdf.set_font("Helvetica", "", 11)
-            pdf.set_text_color(80, 80, 80)
-            pdf.cell(0, 7, f"Report period: {range_label}", ln=True)
-            pdf.cell(0, 7, f"Generated: {generated}", ln=True)
-            pdf.ln(6)
-
-            pdf.set_draw_color(34, 197, 94)
-            pdf.set_line_width(0.8)
-            pdf.line(10, pdf.get_y(), 200, pdf.get_y())
-            pdf.ln(8)
-
-        pdf.set_text_color(20, 20, 20)
-        pdf.set_font("Helvetica", "B", 15)
-        pdf.cell(0, 9, _safe_text(stats["name"]), ln=True)
-
-        pdf.set_font("Helvetica", "", 10)
-        pdf.set_text_color(60, 60, 60)
-        pdf.cell(0, 6, _safe_text(stats["url"]), ln=True)
-        pdf.ln(4)
-
-        rows = [
-            ("Overall Uptime", f"{stats['range_uptime_pct']:.2f}%"),
-            ("Avg Response Time", f"{stats['avg_response_ms']:.2f} ms"),
-            ("Avg Response in Range", f"{stats['range_avg_response_ms']:.2f} ms"),
-            ("Min Response (range)", f"{stats['range_min_ms']:.2f} ms"),
-            ("Max Response (range)", f"{stats['range_max_ms']:.2f} ms"),
-            ("No. of Peaks Above 1000 ms", str(stats["peaks_over_1000"])),
-            ("Total Downtime", _fmt_duration(stats.get("total_downtime_seconds", 0))),
-            ("Avg Downtime", _fmt_duration(stats.get("avg_downtime_seconds", 0))),
-            ("Highest Downtime", _fmt_duration(stats.get("highest_downtime_seconds", 0))),
-            ("Certificate Expiry", _fmt_expiry(stats.get("ssl_expiry"))),
-            ("Domain Expiry", _fmt_expiry(stats.get("domain_expiry"))),
-        ]
-
-        col_w = (190 - 20) / 2
-        pdf.set_font("Helvetica", "B", 10)
-        pdf.set_fill_color(245, 245, 245)
-        pdf.cell(col_w, 8, "Metric", border=1, fill=True)
-        pdf.cell(col_w, 8, "Value", border=1, fill=True, ln=True)
-
-        pdf.set_font("Helvetica", "", 10)
-        for i, (label, value) in enumerate(rows):
-            fill = i % 2 == 0
-            if fill:
-                pdf.set_fill_color(252, 252, 252)
-            pdf.cell(col_w, 8, label, border=1, fill=fill)
-            pdf.cell(col_w, 8, value, border=1, fill=fill, ln=True)
-
-        if idx < len(services_stats) - 1:
-            pdf.ln(4)
+    generated = datetime.datetime.now().strftime("%d %b %Y  %H:%M")
 
     if not services_stats:
         pdf.add_page()
         pdf.set_font("Helvetica", "", 12)
-        pdf.cell(0, 10, "No services selected for this report.", ln=True)
+        pdf.set_text_color(*_TEXT)
+        pdf.cell(0, 10, "No services selected for this report.", new_x="LMARGIN", new_y="NEXT")
+        pdf.output(str(out))
+        return out
+
+    pdf._draw_cover(range_label, generated, services_stats)
+
+    for stats in services_stats:
+        pdf.add_page()
+        pdf._draw_service_header(stats)
+        pdf._draw_kpi_row(stats)
+
+        sections = [
+            ("Availability", [
+                ("Overall Uptime", f"{stats['range_uptime_pct']:.2f}%"),
+                ("Total Downtime", _fmt_duration(stats.get("total_downtime_seconds", 0))),
+                ("Avg Downtime", _fmt_duration(stats.get("avg_downtime_seconds", 0))),
+                ("Highest Downtime", _fmt_duration(stats.get("highest_downtime_seconds", 0))),
+            ]),
+            ("Performance", [
+                ("Avg Response Time (all time)", f"{stats['avg_response_ms']:.2f} ms"),
+                ("Avg Response in Range", f"{stats['range_avg_response_ms']:.2f} ms"),
+                ("Min Response (range)", f"{stats['range_min_ms']:.2f} ms"),
+                ("Max Response (range)", f"{stats['range_max_ms']:.2f} ms"),
+                ("No. of Peaks Above 1000 ms", str(stats["peaks_over_1000"])),
+            ]),
+            ("Certificate & Domain", [
+                ("Certificate Expiry", _fmt_expiry(stats.get("ssl_expiry"))),
+                ("Domain Expiry", _fmt_expiry(stats.get("domain_expiry"))),
+            ]),
+        ]
+        pdf._draw_metrics_table(sections)
 
     pdf.output(str(out))
     return out
