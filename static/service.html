@@ -98,9 +98,15 @@ button{cursor:pointer;font-family:inherit}
 
 /* ─ Chart section ───────────────────────────────────────── */
 .chart-section{padding:1.5rem 2rem;background:var(--s2)}
-.chart-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem}
-.chart-title{font-size:0.72rem;text-transform:uppercase;letter-spacing:2px;color:var(--muted);font-weight:600}
-.chart-legend{display:flex;align-items:center;gap:6px;font-size:0.7rem;color:var(--muted)}
+.chart-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;gap:1rem;flex-wrap:wrap}
+.chart-title{font-size:0.72rem;text-transform:uppercase;letter-spacing:2px;color:#fff;font-weight:600}
+.chart-tools{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap}
+.chart-tools label{font-size:0.68rem;color:#fff}
+.chart-tools select{
+  background:var(--surface);border:1px solid var(--b2);color:#fff;
+  padding:0.35rem 0.55rem;border-radius:6px;font-size:0.72rem
+}
+.chart-legend{display:flex;align-items:center;gap:6px;font-size:0.7rem;color:#fff}
 .legend-dot{width:12px;height:4px;background:var(--green);border-radius:2px}
 canvas{display:block;width:100%!important;border-radius:6px}
 
@@ -213,7 +219,18 @@ tr:hover td{background:var(--s2)}
   <div class="chart-section">
     <div class="chart-header">
       <div class="chart-title">Response Time (ms)</div>
-      <div class="chart-legend"><div class="legend-dot"></div> Avg Ping</div>
+      <div class="chart-tools">
+        <label for="chart-range">Range</label>
+        <select id="chart-range" onchange="onChartRangeChange()">
+          <option value="5m">Last 5 minutes</option>
+          <option value="1h">Last 1 hour</option>
+          <option value="1d" selected>Last 24 hours</option>
+          <option value="2d">Last 2 days</option>
+          <option value="7d">Last 7 days</option>
+          <option value="15d">Last 15 days</option>
+        </select>
+        <div class="chart-legend"><div class="legend-dot"></div> Avg Ping</div>
+      </div>
     </div>
     <canvas id="chart" height="160"></canvas>
   </div>
@@ -326,7 +343,9 @@ let checksTotalPages = 1;
 let notifyChannels = [];
 let liveTimer = null;
 let checksTimer = null;
-let lastHistoryKey = "";
+let chartTimer = null;
+let chartHistory = [];
+let chartRange = "1d";
 
 async function loadNotifyChannelOptions() {
   const res = await fetch("/api/settings/notifications/options");
@@ -338,7 +357,7 @@ function renderNotifyPicker(selectedIds = []) {
   const el = document.getElementById("f-notify-channels");
   const enabled = notifyChannels.filter(c => c.enabled);
   if (!enabled.length) {
-    el.innerHTML = `<div class="empty-hint">No channels yet. <a href="/settings" target="_blank">Open Settings → Notifications</a> to create Slack, email, or webhook channels.</div>`;
+    el.innerHTML = `<div class="empty-hint">No channels yet. <a href="/settings" target="_blank">Open Settings → Notifications</a> to create Slack or email channels.</div>`;
     return;
   }
   const sel = new Set((selectedIds || []).map(Number));
@@ -426,13 +445,21 @@ function renderLive(s) {
     sc("Cert Exp.",s.ssl_expiry||"–",sslD,dCls(s.ssl_days),"link",""),
     sc("Domain Exp.",s.domain_expiry||"–",domD,dCls(s.domain_days),"",""),
   ].join("");
+}
 
-  const history = s.history || [];
-  const historyKey = history.length ? `${history.length}:${history[history.length-1].ts}:${history[history.length-1].ms}` : "empty";
-  if (historyKey !== lastHistoryKey) {
-    lastHistoryKey = historyKey;
-    drawChart(history);
-  }
+async function loadChart() {
+  chartRange = document.getElementById("chart-range").value;
+  const res = await fetch(`/api/services/${sid}/history?range=${encodeURIComponent(chartRange)}`);
+  if (res.status === 401) { location.href = "/login"; return; }
+  if (!res.ok) return;
+  const data = await res.json();
+  chartHistory = data.items || [];
+  drawChart(chartHistory, chartRange);
+}
+
+function onChartRangeChange() {
+  loadChart();
+  scheduleChartRefresh();
 }
 
 function render(s) {
@@ -494,7 +521,21 @@ function nextChecksPage() {
 }
 
 // ── Chart ────────────────────────────────────────────────
-function drawChart(history) {
+function formatChartLabel(ts, range) {
+  const d = new Date(ts * 1000);
+  if (range === "5m") {
+    return d.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit", second:"2-digit"});
+  }
+  if (range === "15d" || range === "7d") {
+    return d.toLocaleDateString([], {month:"short", day:"numeric"});
+  }
+  if (range === "2d") {
+    return d.toLocaleString([], {month:"short", day:"numeric", hour:"2-digit", minute:"2-digit"});
+  }
+  return d.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
+}
+
+function drawChart(history, range=chartRange) {
   const canvas = document.getElementById("chart");
   const ctx    = canvas.getContext("2d");
   const dpr    = window.devicePixelRatio || 1;
@@ -505,7 +546,14 @@ function drawChart(history) {
   ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, W, H);
 
-  if (!history.length) return;
+  if (!history.length) {
+    ctx.fillStyle = "#fff";
+    ctx.font = "12px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("No response data for this range", W / 2, H / 2);
+    canvas._history = [];
+    return;
+  }
   const vals = history.map(h=>h.ms);
   const mn   = Math.min(...vals);
   const mx   = Math.max(...vals, mn+1);
@@ -519,18 +567,18 @@ function drawChart(history) {
   for (let i=0; i<=steps; i++) {
     const v = mn + (mx-mn) * (i/steps);
     const y = pad.t + cH - (i/steps)*cH;
-    ctx.strokeStyle = "#1a1a2e"; ctx.lineWidth = 0.5;
+    ctx.strokeStyle = "#3a3a52"; ctx.lineWidth = 0.5;
     ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(W-pad.r, y); ctx.stroke();
-    ctx.fillStyle = "#555"; ctx.font = "10px monospace"; ctx.textAlign = "right";
+    ctx.fillStyle = "#fff"; ctx.font = "10px monospace"; ctx.textAlign = "right";
     ctx.fillText(Math.round(v), pad.l-6, y+4);
   }
 
   // X time labels
-  ctx.fillStyle = "#555"; ctx.font = "9px monospace"; ctx.textAlign = "center";
+  ctx.fillStyle = "#fff"; ctx.font = "9px monospace"; ctx.textAlign = "center";
   [0, 0.25, 0.5, 0.75, 1].forEach(f => {
     const i   = Math.min(Math.round(f*(n-1)), n-1);
     const x   = pad.l + f*cW;
-    const lbl = new Date(history[i].ts*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+    const lbl = formatChartLabel(history[i].ts, range);
     ctx.fillText(lbl, x, H-pad.b+14);
   });
 
@@ -641,9 +689,20 @@ function livePollMs() {
   return Math.max(3000, interval * 1000);
 }
 
+function chartPollMs() {
+  return chartRange === "5m" ? 3000 : null;
+}
+
 function scheduleLiveRefresh() {
   if (liveTimer) clearInterval(liveTimer);
   liveTimer = setInterval(refreshLive, livePollMs());
+}
+
+function scheduleChartRefresh() {
+  if (chartTimer) clearInterval(chartTimer);
+  chartTimer = null;
+  const ms = chartPollMs();
+  if (ms) chartTimer = setInterval(loadChart, ms);
 }
 
 function scheduleChecksRefresh() {
@@ -662,7 +721,11 @@ async function refreshLive() {
   const prevInterval = svcData?.interval;
   svcData = s;
   renderLive(s);
-  if (s.interval !== prevInterval) scheduleLiveRefresh();
+  if (s.interval !== prevInterval) {
+    scheduleLiveRefresh();
+    scheduleChartRefresh();
+  }
+  if (chartRange !== "5m") loadChart();
 }
 
 // ── Main load ────────────────────────────────────────────
@@ -671,15 +734,16 @@ async function loadData() {
   if (res.status === 401) { location.href = "/login"; return; }
   const s = await res.json();
   render(s);
-  await loadChecks();
+  await Promise.all([loadChart(), loadChecks()]);
   scheduleChecksRefresh();
+  scheduleChartRefresh();
 }
 
 loadSidebar();
 loadData();
 setInterval(loadSidebar, 60000);
 window.addEventListener("resize", () => {
-  if (svcData?.history) drawChart(svcData.history);
+  if (chartHistory.length) drawChart(chartHistory, chartRange);
 });
 </script>
 </body>

@@ -6,16 +6,18 @@ services:
     container_name: tech-monitoring
     restart: unless-stopped
     ports:
-      - "3001:8080"
+      - "127.0.0.1:3001:8080"
+    env_file:
+      - .env
     environment:
       - UPTIME_SECRET_KEY=change-this-in-production-limon
       - DB_FILE=/app/data/uptime.db
       - LOG_FILE=/app/data/tech.log
     volumes:
-      - ./data:/app/data
+      - ./:/app
     working_dir: /app
     user: "0:0"
-    command: sh -c "mkdir -p /app/data && touch /app/data/uptime.db /app/data/tech.log && chmod 666 /app/data/uptime.db /app/data/tech.log && exec gunicorn --bind 0.0.0.0:8080 --workers 1 --threads 4 --timeout 60 app:app"
+    command: sh -c "mkdir -p /app/data && touch /app/data/uptime.db /app/data/tech.log && chmod 666 /app/data/uptime.db /app/data/tech.log && exec gunicorn --bind 0.0.0.0:8080 --workers 1 --threads 4 --timeout 60 --reload app:app"
     stop_grace_period: 30s
     security_opt:
       - no-new-privileges:true

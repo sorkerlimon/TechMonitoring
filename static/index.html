@@ -307,7 +307,7 @@ function renderNotifyPicker(selectedIds = []) {
   const el = document.getElementById("f-notify-channels");
   const enabled = notifyChannels.filter(c => c.enabled);
   if (!enabled.length) {
-    el.innerHTML = `<div class="empty-hint">No channels yet. <a href="/settings" target="_blank">Open Settings → Notifications</a> to create Slack, email, or webhook channels.</div>`;
+    el.innerHTML = `<div class="empty-hint">No channels yet. <a href="/settings" target="_blank">Open Settings → Notifications</a> to create Slack or email channels.</div>`;
     return;
   }
   const sel = new Set((selectedIds || []).map(Number));

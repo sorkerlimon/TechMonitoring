@@ -280,13 +280,58 @@ def history_2h(sid):
     return [{"ts": r["ts"], "ok": bool(r["is_up"]),
              "ms": r["response_ms"], "code": r["status_code"]} for r in rows]
 
+def chart_history(sid, range_key="1d", max_points=400):
+    range_key = normalize_range_key(range_key, default="1d")
+    range_seconds = range_to_seconds(range_key)
+    cutoff = time.time() - range_seconds
+    to_ts = time.time()
+    max_points = max(1, min(5000, int(max_points)))
+
+    with DB_LOCK:
+        c = db()
+        if range_seconds <= 15 * 60:
+            rows = c.execute("""SELECT ts, is_up, response_ms, status_code FROM checks
+                                WHERE service_id=? AND ts>=? AND ts<=?
+                                ORDER BY ts ASC
+                                LIMIT ?""",
+                             (sid, cutoff, to_ts, max_points)).fetchall()
+        else:
+            bucket = max(1, int(range_seconds / max_points))
+            rows = c.execute("""SELECT
+                                    (CAST(ts AS INTEGER) / ?) * ? AS bucket_ts,
+                                    AVG(response_ms) AS ms,
+                                    MIN(is_up) AS is_up,
+                                    MAX(status_code) AS status_code
+                                FROM checks
+                                WHERE service_id=? AND ts>=? AND ts<=?
+                                GROUP BY bucket_ts
+                                ORDER BY bucket_ts ASC""",
+                             (bucket, bucket, sid, cutoff, to_ts)).fetchall()
+        c.close()
+
+    if range_seconds <= 15 * 60:
+        return [{
+            "ts": r["ts"],
+            "ok": bool(r["is_up"]),
+            "ms": r["response_ms"],
+            "code": r["status_code"],
+        } for r in rows]
+    return [{
+        "ts": r["bucket_ts"],
+        "ok": bool(r["is_up"]),
+        "ms": round(r["ms"], 2) if r["ms"] is not None else 0,
+        "code": r["status_code"],
+    } for r in rows]
+
 def range_to_seconds(range_key):
     key = normalize_range_key(range_key, default="2h")
-    m = re.fullmatch(r"(\d+)([hd])", key)
+    m = re.fullmatch(r"(\d+)([mhd])", key)
     if not m:
         return 2 * 3600
     n = int(m.group(1))
     unit = m.group(2)
+    if unit == "m":
+        return n * 60
     if unit == "h":
         return n * 3600
     return n * 24 * 3600
@@ -304,13 +349,16 @@ def normalize_range_key(range_key, default="2h"):
         return f"{n}h" if n > 0 else default
 
     # Normalize textual forms:
+    # 5min, 5mins, 5minute, 5minutes -> 5m
     # 2hr, 2hrs, 2hour, 2hours -> 2h
     # 1day, 3days -> 1d / 3d
+    key = re.sub(r"minutes?$", "m", key)
+    key = re.sub(r"mins?$", "m", key)
     key = re.sub(r"hours?$", "h", key)
     key = re.sub(r"hrs?$", "h", key)
     key = re.sub(r"days?$", "d", key)
 
-    m = re.fullmatch(r"(\d+)([hd])", key)
+    m = re.fullmatch(r"(\d+)([mhd])", key)
     if not m:
         return default
     n = int(m.group(1))
@@ -995,6 +1043,28 @@ def api_detail(sid):
     data = build_service(sid)
     if not data: return jsonify({"error": "not found"}), 404
     return jsonify(data)
+
+@app.route("/api/services/<int:sid>/history", methods=["GET"])
+def api_service_history(sid):
+    with DB_LOCK:
+        c = db()
+        exists = c.execute("SELECT 1 FROM services WHERE id=? LIMIT 1", (sid,)).fetchone()
+        c.close()
+    if not exists:
+        return jsonify({"error": "not found"}), 404
+
+    range_key = normalize_range_key(request.args.get("range", "1d"), default="1d")
+    try:
+        max_points = int(request.args.get("max_points", 400))
+    except (TypeError, ValueError):
+        max_points = 400
+    items = chart_history(sid, range_key=range_key, max_points=max_points)
+    return jsonify({
+        "range": range_key,
+        "from_ts": time.time() - range_to_seconds(range_key),
+        "to_ts": time.time(),
+        "items": items,
+    })
 
 @app.route("/api/services/<int:sid>/checks", methods=["GET"])
 def api_checks(sid):

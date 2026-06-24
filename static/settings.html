@@ -53,6 +53,11 @@ a{color:var(--blue);text-decoration:none}
 .btn-danger:hover{background:#7f1d1d22;border-color:#b91c1c}
 .btn-sm{padding:.4rem .65rem;font-size:.78rem;border-radius:8px}
 .btn:disabled{opacity:.5;cursor:not-allowed;transform:none}
+.btn-spinner{
+  width:.85rem;height:.85rem;border:2px solid currentColor;border-top-color:transparent;
+  border-radius:50%;animation:btn-spin .65s linear infinite;flex-shrink:0;
+}
+@keyframes btn-spin{to{transform:rotate(360deg)}}
 
 /* Tabs */
 .tabs{display:flex;gap:.4rem;margin:1.8rem 0 1.2rem;border-bottom:1px solid var(--border)}
@@ -298,7 +303,7 @@ tbody tr:hover{background:#ffffff05}
       <div class="card-head">
         <div>
           <h2>Add notification channel</h2>
-          <p>Create Slack, email, or webhook destinations here. Assign them to monitors when adding or editing a monitor on the dashboard.</p>
+          <p>Create Slack or email destinations here. Assign them to monitors when adding or editing a monitor on the dashboard.</p>
         </div>
       </div>
       <div class="form-row">
@@ -311,7 +316,6 @@ tbody tr:hover{background:#ffffff05}
           <select id="nc-type" onchange="renderNotifyConfigFields()">
             <option value="slack">Slack (webhook)</option>
             <option value="email">Email (SMTP)</option>
-            <option value="webhook">Generic webhook</option>
           </select>
         </div>
       </div>
@@ -594,10 +598,6 @@ const NOTIFY_CONFIG_FIELDS = {
     {id:"smtp_user", label:"SMTP username", type:"text", placeholder:"user@company.com"},
     {id:"smtp_pass", label:"SMTP password", type:"password", placeholder:"app password"},
   ],
-  webhook: [
-    {id:"url", label:"Webhook URL", type:"text", placeholder:"https://your-service.com/hooks/uptime"},
-    {id:"method", label:"HTTP method", type:"text", placeholder:"POST"},
-  ],
 };
 
 function renderNotifyConfigFields(values={}){
@@ -707,10 +707,13 @@ async function saveNotification(){
 function startEditNotification(id){
   const ch = NOTIFY_CHANNELS.find(x=>x.id===id);
   if (!ch) return;
+  if (ch.type === "webhook"){
+    toast("Generic webhook channels are no longer supported. Delete this channel and use Slack or Email.","err");
+    return;
+  }
   NOTIFY_EDIT_ID = id;
   const cfg = {...(ch.config||{})};
   if (ch.type === "slack") cfg.webhook_url = "";
-  if (ch.type === "webhook") cfg.url = "";
   if (ch.type === "email") cfg.smtp_pass = "";
   document.getElementById("nc-name").value = ch.name;
   document.getElementById("nc-type").value = ch.type;
@@ -726,12 +729,26 @@ function startEditNotification(id){
   document.getElementById("nc-name").scrollIntoView({behavior:"smooth", block:"center"});
 }
 
-async function testNotification(id){
+async function testNotification(id, btn){
   const ch = NOTIFY_CHANNELS.find(x=>x.id===id);
-  const res = await fetch(`/api/settings/notifications/${id}/test`, {method:"POST"});
-  const data = await res.json().catch(()=>({}));
-  if (!res.ok){ toast(data.error || "Test failed","err"); return; }
-  toast(`Test sent to "${ch?.name||'channel'}"`,"ok");
+  const label = btn?.dataset.label || btn?.textContent || "Test";
+  if (btn){
+    btn.disabled = true;
+    btn.dataset.label = label;
+    btn.innerHTML = `<span class="btn-spinner"></span> Testing`;
+  }
+  try {
+    const res = await fetch(`/api/settings/notifications/${id}/test`, {method:"POST"});
+    const data = await res.json().catch(()=>({}));
+    if (!res.ok){ toast(data.error || "Test failed","err"); return; }
+    toast(data.message || `Test sent to "${ch?.name||'channel'}"`,"ok");
+  } finally {
+    if (btn){
+      btn.disabled = false;
+      btn.textContent = label;
+      delete btn.dataset.label;
+    }
+  }
 }
 
 function askDeleteNotification(id){
@@ -795,7 +812,7 @@ document.getElementById("notify-rows").addEventListener("click", e=>{
   const btn = e.target.closest("[data-action]");
   if (!btn) return;
   const id = Number(btn.dataset.id);
-  if (btn.dataset.action === "test-notify") testNotification(id);
+  if (btn.dataset.action === "test-notify") testNotification(id, btn);
   if (btn.dataset.action === "edit-notify") startEditNotification(id);
   if (btn.dataset.action === "delete-notify") askDeleteNotification(id);
 });

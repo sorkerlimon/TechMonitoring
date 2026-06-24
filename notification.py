@@ -1,6 +1,8 @@
 """Notification channels and alert delivery for Tech Monitoring."""
 
 import json
+import os
+import ssl
 import threading
 import datetime
 import smtplib
@@ -12,7 +14,7 @@ from techlog import get_logger
 
 log = get_logger("notify")
 
-NOTIFY_TYPES = {"slack", "email", "webhook"}
+NOTIFY_TYPES = {"slack", "email"}
 NOTIFY_EVENTS = {"down", "up", "cert_expiry", "domain_expiry"}
 EXPIRY_THRESHOLDS = (30, 14, 7, 1, 0)
 
@@ -276,28 +278,47 @@ def _send_webhook(config, message, event, service_name, service_url, extra):
     urllib.request.urlopen(req, timeout=15)
 
 
+def _resolve_email_config(config):
+    cfg = dict(config or {})
+    from_addr = (cfg.get("from") or os.environ.get("MAIL_FROM_ADDRESS") or cfg.get("smtp_user") or "").strip()
+    from_name = (os.environ.get("MAIL_FROM_NAME") or "").strip().strip('"')
+    return {
+        "to": (cfg.get("to") or "").strip(),
+        "from": from_addr,
+        "from_header": f"{from_name} <{from_addr}>" if from_name and from_addr else from_addr,
+        "host": (cfg.get("smtp_host") or os.environ.get("MAIL_HOST") or "").strip(),
+        "port": int(cfg.get("smtp_port") or os.environ.get("MAIL_PORT") or 587),
+        "user": (cfg.get("smtp_user") or os.environ.get("MAIL_USERNAME") or "").strip(),
+        "password": cfg.get("smtp_pass") or os.environ.get("MAIL_PASSWORD") or "",
+        "use_tls": bool(cfg.get("use_tls", True)),
+    }
+
+
 def _send_email(config, subject, message):
-    to_addr = (config.get("to") or "").strip()
-    from_addr = (config.get("from") or config.get("smtp_user") or "").strip()
-    host = (config.get("smtp_host") or "").strip()
-    if not to_addr or not host:
+    cfg = _resolve_email_config(config)
+    if not cfg["to"] or not cfg["host"]:
         raise ValueError("email to and smtp_host required")
-    port = int(config.get("smtp_port") or 587)
-    use_tls = bool(config.get("use_tls", True))
-    user = (config.get("smtp_user") or "").strip()
-    password = config.get("smtp_pass") or ""
 
     msg = MIMEText(message, "plain", "utf-8")
     msg["Subject"] = subject
-    msg["From"] = from_addr
-    msg["To"] = to_addr
+    msg["From"] = cfg["from_header"] or cfg["from"]
+    msg["To"] = cfg["to"]
 
-    with smtplib.SMTP(host, port, timeout=15) as smtp:
-        if use_tls:
-            smtp.starttls()
-        if user and password:
-            smtp.login(user, password)
-        smtp.sendmail(from_addr, [to_addr], msg.as_string())
+    context = ssl.create_default_context()
+    port = cfg["port"]
+    if port == 465:
+        smtp_cls = smtplib.SMTP_SSL
+        connect_kwargs = {"context": context, "timeout": 15}
+    else:
+        smtp_cls = smtplib.SMTP
+        connect_kwargs = {"timeout": 15}
+
+    with smtp_cls(cfg["host"], port, **connect_kwargs) as smtp:
+        if port != 465 and cfg["use_tls"]:
+            smtp.starttls(context=context)
+        if cfg["user"] and cfg["password"]:
+            smtp.login(cfg["user"], cfg["password"])
+        smtp.sendmail(cfg["from"] or cfg["user"], [cfg["to"]], msg.as_string())
 
 
 def deliver_channel(channel, event, service_name, service_url, extra=None):
@@ -490,11 +511,23 @@ def register_routes(app):
             c.close()
         if not row:
             return jsonify({"error": "not found"}), 404
+        channel = dict(row)
+        test_events = [
+            ("down", {"status_code": 503, "response_ms": 0}),
+            ("up", {"status_code": 200, "response_ms": 42}),
+        ]
+        sent = []
         try:
-            deliver_channel(
-                dict(row), "up", "Test Monitor", "https://example.com/health",
-                {"status_code": 200, "response_ms": 42},
-            )
+            for event, extra in test_events:
+                deliver_channel(
+                    channel, event, "Test Monitor", "https://example.com/health", extra,
+                )
+                sent.append(event)
         except Exception as e:
-            return jsonify({"error": str(e)}), 400
-        return jsonify({"ok": True, "message": "Test notification sent"})
+            log.warning("Notification test failed id=%s: %s", nid, e)
+            return jsonify({"error": str(e), "sent": sent}), 400
+        return jsonify({
+            "ok": True,
+            "message": f"Test notifications sent ({', '.join(sent)})",
+            "sent": sent,
+        })
