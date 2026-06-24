@@ -2,3 +2,4 @@ Flask
 python-whois
 gunicorn
 python-dotenv
+fpdf2

@@ -1,12 +1,13 @@
-import ssl, socket, time, json, threading, datetime, sqlite3, os, re, secrets, hashlib, hmac
+import ssl, socket, time, json, threading, datetime, sqlite3, os, re, secrets, hashlib, hmac, tempfile, shutil
 import urllib.request, urllib.error
 from pathlib import Path
 from urllib.parse import urlparse
-from flask import Flask, request, jsonify, send_from_directory, session, redirect
+from flask import Flask, request, jsonify, send_from_directory, session, redirect, send_file, after_this_request
 from werkzeug.exceptions import HTTPException
 
 from database import db, DB_LOCK, DB_FILE, init_db
 import notification
+from report_pdf import fetch_service_report_stats, build_report_pdf, report_filename
 from techlog import setup_logging, get_logger
 
 setup_logging()
@@ -1279,6 +1280,79 @@ def settings_page():
     if not current_user():
         return redirect("/login")
     return send_from_directory(STATIC, "settings.html")
+
+@app.route("/api/settings/reports/generate", methods=["POST"])
+def api_generate_report():
+    if not current_user():
+        return jsonify({"error": "login required"}), 401
+
+    d = request.json or {}
+    start_raw = (d.get("start") or "").strip()
+    end_raw = (d.get("end") or "").strip()
+    service_ids = d.get("service_ids") or []
+
+    if not start_raw or not end_raw:
+        return jsonify({"error": "start and end dates required"}), 400
+
+    start_dt = _parse_dt_param(start_raw)
+    end_dt = _parse_dt_param(end_raw)
+    if not start_dt or not end_dt:
+        return jsonify({"error": "invalid date format, use YYYY-MM-DD"}), 400
+
+    end_date = datetime.date.fromisoformat(end_raw) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", end_raw) else end_dt.date()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", end_raw):
+        end_dt = end_dt + datetime.timedelta(days=1) - datetime.timedelta(microseconds=1)
+
+    if end_dt < start_dt:
+        start_dt, end_dt = end_dt, start_dt
+        start_raw, end_raw = end_raw, start_raw
+        end_date = datetime.date.fromisoformat(end_raw) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", end_raw) else end_dt.date()
+
+    from_ts = start_dt.timestamp()
+    to_ts = end_dt.timestamp()
+
+    ids = []
+    for raw in service_ids:
+        try:
+            ids.append(int(raw))
+        except (TypeError, ValueError):
+            continue
+    if not ids:
+        return jsonify({"error": "select at least one service"}), 400
+
+    stats_list = []
+    for sid in ids:
+        stats = fetch_service_report_stats(sid, from_ts, to_ts, db, DB_LOCK)
+        if stats:
+            stats_list.append(stats)
+    if not stats_list:
+        return jsonify({"error": "no valid services found"}), 400
+
+    fd, tmp_path = tempfile.mkstemp(suffix=".pdf")
+    os.close(fd)
+    try:
+        build_report_pdf(stats_list, start_dt.date(), end_date, tmp_path)
+        filename = report_filename(start_dt.date(), end_date)
+        data_pdf = STATIC.parent / "data" / "weekly_uptime.pdf"
+        data_pdf.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(tmp_path, data_pdf)
+    except Exception as e:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        log.error("Report PDF generation failed: %s", e)
+        return jsonify({"error": "could not generate report"}), 500
+
+    @after_this_request
+    def _cleanup(response):
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        return response
+
+    return send_file(tmp_path, mimetype="application/pdf", as_attachment=True, download_name=filename)
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 

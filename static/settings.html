@@ -84,7 +84,7 @@ a{color:var(--blue);text-decoration:none}
 .form-row{display:flex;gap:.6rem;flex-wrap:wrap;align-items:center}
 .field{display:flex;flex-direction:column;gap:.3rem}
 .field label{font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;padding-left:.15rem}
-input[type=text],input[type=password],input[type=number],input[type=email],select{
+input[type=text],input[type=password],input[type=number],input[type=email],input[type=date],select{
   padding:.62rem .8rem;border-radius:10px;border:1px solid var(--b2);
   background:var(--s2);color:#fff;font-size:.9rem;font-family:inherit;min-width:200px;transition:.15s;
 }
@@ -102,6 +102,9 @@ select{cursor:pointer}
 .badge-email{background:#f59e0b22;color:#fcd34d;border:1px solid #f59e0b44}
 .badge-webhook{background:#8b5cf622;color:#c4b5fd;border:1px solid #8b5cf644}
 .config-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.7rem;margin-top:.8rem}
+.service-pick{display:flex;flex-direction:column;gap:.45rem;max-height:220px;overflow-y:auto;padding:.65rem;border:1px solid var(--b2);border-radius:10px;background:var(--s2)}
+.service-pick label{display:flex;align-items:center;gap:.55rem;font-size:.84rem;cursor:pointer;color:var(--text)}
+.service-pick .pick-all{border-bottom:1px solid var(--border);padding-bottom:.5rem;margin-bottom:.2rem;font-weight:600}
 
 /* admin toggle */
 .toggle{display:flex;align-items:center;gap:.5rem;cursor:pointer;user-select:none;font-size:.86rem;color:var(--text)}
@@ -197,6 +200,7 @@ tbody tr:hover{background:#ffffff05}
     <button class="tab active" id="tab-users" onclick="switchTab('users')">Users</button>
     <button class="tab" id="tab-keys" onclick="switchTab('keys')">API Keys</button>
     <button class="tab" id="tab-notify" onclick="switchTab('notify')">Notifications</button>
+    <button class="tab" id="tab-reports" onclick="switchTab('reports')">Reports</button>
   </div>
 
   <!-- USERS -->
@@ -355,6 +359,40 @@ tbody tr:hover{background:#ffffff05}
       </div>
     </div>
   </section>
+
+  <!-- REPORTS -->
+  <section id="panel-reports" class="hidden">
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h2>Generate PDF Report</h2>
+          <p>Choose a date range and services. Each selected service gets its own page with uptime and response metrics.</p>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="field">
+          <label>Start date</label>
+          <input type="date" id="report-start">
+        </div>
+        <div class="field">
+          <label>End date</label>
+          <input type="date" id="report-end">
+        </div>
+      </div>
+      <div class="field" style="margin-top:1rem">
+        <label>Services</label>
+        <div class="service-pick" id="report-services">
+          <div class="empty">Loading services…</div>
+        </div>
+      </div>
+      <div class="form-row" style="margin-top:1.2rem">
+        <button class="btn btn-primary" id="report-generate" onclick="generateReport()">Generate Report</button>
+      </div>
+      <div class="hint" style="margin-top:.8rem">
+        Report includes: Overall Uptime, Avg Response Time, Avg Response in Range, Min/Max Response, No. of Peaks Above 1000 ms, Certificate Expiry, and Domain Expiry.
+      </div>
+    </div>
+  </section>
 </div>
 
 <!-- confirm modal -->
@@ -391,6 +429,7 @@ let lastKey = "";
 let USERS = [];
 let NOTIFY_CHANNELS = [];
 let NOTIFY_EDIT_ID = null;
+let REPORT_SERVICES = [];
 
 const AVATAR_COLORS = ["#22c55e","#4f9cf9","#8b5cf6","#f59e0b","#ec4899","#14b8a6","#f97316"];
 function avatarColor(name){
@@ -409,10 +448,11 @@ function toast(msg, kind="ok"){
 }
 
 function switchTab(name){
-  ["users","keys","notify"].forEach(t=>{
+  ["users","keys","notify","reports"].forEach(t=>{
     document.getElementById("tab-"+t).classList.toggle("active", name===t);
     document.getElementById("panel-"+t).classList.toggle("hidden", name!==t);
   });
+  if (name === "reports") loadReportServices();
 }
 
 async function ensureAuth(){
@@ -764,6 +804,110 @@ function askDeleteNotification(id){
     if (NOTIFY_EDIT_ID === id) resetNotifyForm();
     await loadNotifications();
   });
+}
+
+/* ---------- Reports ---------- */
+function isoDate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function initReportDates() {
+  const end = new Date();
+  const start = new Date();
+  start.setDate(end.getDate() - 7);
+  const endEl = document.getElementById("report-end");
+  const startEl = document.getElementById("report-start");
+  if (endEl && !endEl.value) endEl.value = isoDate(end);
+  if (startEl && !startEl.value) startEl.value = isoDate(start);
+}
+
+async function loadReportServices() {
+  initReportDates();
+  const el = document.getElementById("report-services");
+  const res = await fetch("/api/services");
+  if (res.status === 401) { location.href = "/login"; return; }
+  if (!res.ok) {
+    el.innerHTML = `<div class="empty">Could not load services</div>`;
+    return;
+  }
+  REPORT_SERVICES = await res.json();
+  if (!REPORT_SERVICES.length) {
+    el.innerHTML = `<div class="empty">No monitors yet. <a href="/">Add a monitor on the dashboard</a>.</div>`;
+    return;
+  }
+  el.innerHTML = `
+    <label class="pick-all"><input type="checkbox" id="report-select-all" checked onchange="toggleAllReportServices(this.checked)"> Select all</label>
+    ${REPORT_SERVICES.map(s => `
+      <label><input type="checkbox" class="report-svc" value="${s.id}" checked>
+        ${esc(s.name)} <span style="color:var(--muted)">${esc(s.url)}</span></label>
+    `).join("")}
+  `;
+}
+
+function toggleAllReportServices(on) {
+  document.querySelectorAll(".report-svc").forEach(el => { el.checked = on; });
+}
+
+function getSelectedReportServices() {
+  return [...document.querySelectorAll(".report-svc:checked")].map(el => parseInt(el.value, 10));
+}
+
+function reportDownloadName(start, end) {
+  const slug = s => {
+    const [y, m, d] = s.split("-").map(Number);
+    return `${y}-${m}-${d}`;
+  };
+  if (start === end) return `weekly_uptime_${slug(start)}.pdf`;
+  return `weekly_uptime_${slug(start)}_to_${slug(end)}.pdf`;
+}
+
+function filenameFromDisposition(header) {
+  if (!header) return "";
+  const m = /filename\*?=(?:UTF-8''|")?([^";]+)/i.exec(header);
+  return m ? decodeURIComponent(m[1].replace(/"/g, "")) : "";
+}
+
+async function generateReport() {
+  const start = document.getElementById("report-start").value;
+  const end = document.getElementById("report-end").value;
+  const service_ids = getSelectedReportServices();
+  if (!start || !end) { toast("Choose start and end dates","err"); return; }
+  if (start > end) { toast("Start date must be before end date","err"); return; }
+  if (!service_ids.length) { toast("Select at least one service","err"); return; }
+
+  const btn = document.getElementById("report-generate");
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.innerHTML = `<span class="btn-spinner"></span> Generating…`;
+
+  try {
+    const res = await fetch("/api/settings/reports/generate", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({start, end, service_ids}),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      toast(data.error || "Could not generate report","err");
+      return;
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filenameFromDisposition(res.headers.get("Content-Disposition")) || reportDownloadName(start, end);
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    toast("Report downloaded","ok");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
 }
 
 /* ---------- Modal ---------- */
