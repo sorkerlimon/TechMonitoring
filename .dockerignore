@@ -1,0 +1,46 @@
+# Virtual environments (often 50–100+ MB — never bake into the image)
+env/
+.venv/
+venv/
+
+# Git history
+.git/
+.gitignore
+
+# Secrets (use env_file / runtime env instead)
+.env
+.env.*
+!.env.example
+
+# Local runtime data (mounted as a volume in docker-compose)
+data/
+*.log
+tech.log
+
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Docs & meta (not needed to run the app)
+docs/
+README.md
+CONTRIBUTING.md
+SECURITY.md
+LICENSE
+
+# Compose / build files
+docker-compose.yml
+Dockerfile
+.dockerignore
