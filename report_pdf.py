@@ -39,6 +39,60 @@ def _fmt_expiry(date_str) -> str:
     return f"{label} ({days} days)"
 
 
+def _fmt_duration(seconds: float) -> str:
+    total = max(0, int(round(seconds)))
+    if total == 0:
+        return "0 sec"
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    parts = []
+    if hours:
+        parts.append(f"{hours} hr" if hours == 1 else f"{hours} hrs")
+    if minutes:
+        parts.append(f"{minutes} min")
+    if secs or not parts:
+        parts.append(f"{secs} sec")
+    return " ".join(parts)
+
+
+def _compute_downtime_stats(checks, from_ts: float, to_ts: float, pre_up=None) -> dict:
+    incidents: list[float] = []
+    down_start = None
+
+    if pre_up is False:
+        down_start = from_ts
+
+    prev_up = pre_up
+    for ch in checks:
+        ts = float(ch["ts"])
+        is_up = bool(ch["is_up"])
+        if prev_up is None:
+            if not is_up:
+                down_start = ts
+            prev_up = is_up
+            continue
+        if prev_up and not is_up:
+            down_start = ts
+        elif not prev_up and is_up and down_start is not None:
+            incidents.append(max(0.0, ts - down_start))
+            down_start = None
+        prev_up = is_up
+
+    if down_start is not None:
+        incidents.append(max(0.0, to_ts - down_start))
+
+    total = sum(incidents)
+    count = len(incidents)
+    avg = total / count if count else 0.0
+    highest = max(incidents) if incidents else 0.0
+    return {
+        "total_seconds": total,
+        "avg_seconds": avg,
+        "highest_seconds": highest,
+        "incident_count": count,
+    }
+
+
 def _safe_text(value) -> str:
     text = str(value or "")
     return text.encode("latin-1", errors="replace").decode("latin-1")
@@ -47,7 +101,7 @@ def _safe_text(value) -> str:
 def fetch_service_report_stats(sid: int, from_ts: float, to_ts: float, db_func, db_lock) -> dict | None:
     with db_lock:
         c = db_func()
-        service = c.execute("SELECT id, name, url FROM services WHERE id=?", (sid,)).fetchone()
+        service = c.execute("SELECT id, name, url, interval FROM services WHERE id=?", (sid,)).fetchone()
         if not service:
             c.close()
             return None
@@ -75,7 +129,22 @@ def fetch_service_report_stats(sid: int, from_ts: float, to_ts: float, db_func, 
             "SELECT ssl_expiry, domain_expiry FROM cert_info WHERE service_id=?",
             (sid,),
         ).fetchone()
+        check_rows = c.execute(
+            """SELECT ts, is_up FROM checks
+               WHERE service_id=? AND ts>=? AND ts<=?
+               ORDER BY ts ASC""",
+            (sid, from_ts, to_ts),
+        ).fetchall()
+        prev_check = c.execute(
+            """SELECT is_up FROM checks
+               WHERE service_id=? AND ts<?
+               ORDER BY ts DESC LIMIT 1""",
+            (sid, from_ts),
+        ).fetchone()
         c.close()
+
+    pre_up = None if not prev_check else bool(prev_check["is_up"])
+    downtime = _compute_downtime_stats(check_rows, from_ts, to_ts, pre_up=pre_up)
 
     total_all = int(all_time["total"] or 0)
     up_all = int(all_time["up_count"] or 0)
@@ -100,6 +169,10 @@ def fetch_service_report_stats(sid: int, from_ts: float, to_ts: float, db_func, 
         "total_checks": total,
         "ssl_expiry": cert["ssl_expiry"] if cert else None,
         "domain_expiry": cert["domain_expiry"] if cert else None,
+        "total_downtime_seconds": downtime["total_seconds"],
+        "avg_downtime_seconds": downtime["avg_seconds"],
+        "highest_downtime_seconds": downtime["highest_seconds"],
+        "downtime_incidents": downtime["incident_count"],
     }
 
 
@@ -135,19 +208,20 @@ def build_report_pdf(
         pdf.add_page()
         pdf.set_text_color(30, 30, 30)
 
-        pdf.set_font("Helvetica", "B", 18)
-        pdf.cell(0, 10, "Tech Monitoring Report", ln=True)
+        if idx == 0:
+            pdf.set_font("Helvetica", "B", 18)
+            pdf.cell(0, 10, "Tech Monitoring Report", ln=True)
 
-        pdf.set_font("Helvetica", "", 11)
-        pdf.set_text_color(80, 80, 80)
-        pdf.cell(0, 7, f"Report period: {range_label}", ln=True)
-        pdf.cell(0, 7, f"Generated: {generated}", ln=True)
-        pdf.ln(6)
+            pdf.set_font("Helvetica", "", 11)
+            pdf.set_text_color(80, 80, 80)
+            pdf.cell(0, 7, f"Report period: {range_label}", ln=True)
+            pdf.cell(0, 7, f"Generated: {generated}", ln=True)
+            pdf.ln(6)
 
-        pdf.set_draw_color(34, 197, 94)
-        pdf.set_line_width(0.8)
-        pdf.line(10, pdf.get_y(), 200, pdf.get_y())
-        pdf.ln(8)
+            pdf.set_draw_color(34, 197, 94)
+            pdf.set_line_width(0.8)
+            pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+            pdf.ln(8)
 
         pdf.set_text_color(20, 20, 20)
         pdf.set_font("Helvetica", "B", 15)
@@ -165,6 +239,9 @@ def build_report_pdf(
             ("Min Response (range)", f"{stats['range_min_ms']:.2f} ms"),
             ("Max Response (range)", f"{stats['range_max_ms']:.2f} ms"),
             ("No. of Peaks Above 1000 ms", str(stats["peaks_over_1000"])),
+            ("Total Downtime", _fmt_duration(stats.get("total_downtime_seconds", 0))),
+            ("Avg Downtime", _fmt_duration(stats.get("avg_downtime_seconds", 0))),
+            ("Highest Downtime", _fmt_duration(stats.get("highest_downtime_seconds", 0))),
             ("Certificate Expiry", _fmt_expiry(stats.get("ssl_expiry"))),
             ("Domain Expiry", _fmt_expiry(stats.get("domain_expiry"))),
         ]
