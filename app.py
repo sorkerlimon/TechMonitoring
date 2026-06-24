@@ -7,7 +7,21 @@ from werkzeug.exceptions import HTTPException
 
 from database import db, DB_LOCK, DB_FILE, init_db
 import notification
-from report_pdf import fetch_service_report_stats, build_report_pdf, report_filename
+from report_pdf import report_filename
+from weekly_report import (
+    acquire_test_send_slot,
+    generate_report_for_range,
+    release_test_send_slot,
+    send_weekly_report_email,
+    start_weekly_report_scheduler,
+)
+from report_settings import (
+    get_weekly_settings,
+    save_weekly_settings,
+    migrate_weekly_settings_from_env,
+    resolve_recipient_emails,
+    invalid_recipient_emails,
+)
 from techlog import setup_logging, get_logger
 
 setup_logging()
@@ -102,8 +116,10 @@ def ensure_runtime_started():
         if BOOTSTRAPPED:
             return
         init_db()
+        migrate_weekly_settings_from_env()
         notification.migrate_channels()
         start_all()
+        start_weekly_report_scheduler()
         BOOTSTRAPPED = True
         log.info("Runtime started — monitors active")
 
@@ -1281,6 +1297,79 @@ def settings_page():
         return redirect("/login")
     return send_from_directory(STATIC, "settings.html")
 
+@app.route("/api/settings/weekly-report", methods=["GET"])
+def api_get_weekly_report_settings():
+    if not current_user():
+        return jsonify({"error": "login required"}), 401
+    return jsonify(get_weekly_settings())
+
+
+@app.route("/api/settings/weekly-report", methods=["PUT"])
+def api_save_weekly_report_settings():
+    if not current_user():
+        return jsonify({"error": "login required"}), 401
+    d = request.json or {}
+    to_emails = resolve_recipient_emails(d)
+    if d.get("auto_enabled") and not to_emails:
+        return jsonify({"error": "recipient email required when auto send is enabled"}), 400
+    bad = invalid_recipient_emails(to_emails)
+    if bad:
+        return jsonify({"error": f"invalid email address: {bad[0]}"}), 400
+    saved = save_weekly_settings({**d, "to_emails": to_emails})
+    return jsonify({"ok": True, "settings": saved})
+
+
+@app.route("/api/settings/weekly-report/test", methods=["POST"])
+def api_test_weekly_report():
+    if not current_user():
+        return jsonify({"error": "login required"}), 401
+
+    d = request.json or {}
+    saved = get_weekly_settings()
+    to_emails = resolve_recipient_emails(d, saved)
+    if not to_emails:
+        return jsonify({"error": "recipient email required"}), 400
+    bad = invalid_recipient_emails(to_emails)
+    if bad:
+        return jsonify({"error": f"invalid email address: {bad[0]}"}), 400
+
+    try:
+        days = int(d.get("days", saved.get("days", 7)))
+    except (TypeError, ValueError):
+        days = saved.get("days", 7)
+
+    service_ids = []
+    for raw in d.get("service_ids", saved.get("service_ids") or []):
+        try:
+            service_ids.append(int(raw))
+        except (TypeError, ValueError):
+            continue
+    if not service_ids:
+        return jsonify({"error": "select at least one service"}), 400
+
+    recipient_label = ", ".join(to_emails)
+    if not acquire_test_send_slot(to_emails, days, service_ids):
+        log.info("Weekly report test email deduped for %s (duplicate request)", recipient_label)
+        return jsonify({
+            "ok": True,
+            "message": f"Test report sent to {recipient_label}",
+            "deduped": True,
+        })
+
+    try:
+        result = send_weekly_report_email(to_emails, days=days, service_ids=service_ids, test=True)
+    except Exception as e:
+        release_test_send_slot(to_emails, days, service_ids)
+        log.warning("Weekly report test email failed: %s", e)
+        return jsonify({"error": str(e)}), 400
+
+    return jsonify({
+        "ok": True,
+        "message": f"Test report sent to {recipient_label}",
+        **result,
+    })
+
+
 @app.route("/api/settings/reports/generate", methods=["POST"])
 def api_generate_report():
     if not current_user():
@@ -1308,9 +1397,6 @@ def api_generate_report():
         start_raw, end_raw = end_raw, start_raw
         end_date = datetime.date.fromisoformat(end_raw) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", end_raw) else end_dt.date()
 
-    from_ts = start_dt.timestamp()
-    to_ts = end_dt.timestamp()
-
     ids = []
     for raw in service_ids:
         try:
@@ -1320,22 +1406,22 @@ def api_generate_report():
     if not ids:
         return jsonify({"error": "select at least one service"}), 400
 
-    stats_list = []
-    for sid in ids:
-        stats = fetch_service_report_stats(sid, from_ts, to_ts, db, DB_LOCK)
-        if stats:
-            stats_list.append(stats)
-    if not stats_list:
-        return jsonify({"error": "no valid services found"}), 400
-
     fd, tmp_path = tempfile.mkstemp(suffix=".pdf")
     os.close(fd)
     try:
-        build_report_pdf(stats_list, start_dt.date(), end_date, tmp_path)
+        stats_list = generate_report_for_range(
+            start_dt.date(), end_date, service_ids=ids, output_path=Path(tmp_path),
+        )[1]
         filename = report_filename(start_dt.date(), end_date)
         data_pdf = STATIC.parent / "data" / "weekly_uptime.pdf"
         data_pdf.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(tmp_path, data_pdf)
+    except ValueError as e:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         try:
             os.remove(tmp_path)

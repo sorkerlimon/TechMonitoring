@@ -84,7 +84,7 @@ a{color:var(--blue);text-decoration:none}
 .form-row{display:flex;gap:.6rem;flex-wrap:wrap;align-items:center}
 .field{display:flex;flex-direction:column;gap:.3rem}
 .field label{font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;padding-left:.15rem}
-input[type=text],input[type=password],input[type=number],input[type=email],input[type=date],select{
+input[type=text],input[type=password],input[type=number],input[type=email],input[type=date],select,textarea{
   padding:.62rem .8rem;border-radius:10px;border:1px solid var(--b2);
   background:var(--s2);color:#fff;font-size:.9rem;font-family:inherit;min-width:200px;transition:.15s;
 }
@@ -390,6 +390,62 @@ tbody tr:hover{background:#ffffff05}
       </div>
       <div class="hint" style="margin-top:.8rem">
         Report includes: uptime, response metrics, downtime (total/avg/highest), peaks above 1000 ms, certificate and domain expiry.
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h2>Automatic weekly email</h2>
+          <p>Generate the PDF report on a schedule and email it automatically. SMTP settings come from <code>.env</code>.</p>
+        </div>
+      </div>
+      <div class="form-row" style="align-items:flex-end">
+        <label class="toggle">
+          <input type="checkbox" id="auto-report-enabled">
+          <span class="switch"></span>
+          <span>Send report PDF by email</span>
+        </label>
+      </div>
+      <div class="field" style="margin-top:1rem">
+        <label>Recipient emails</label>
+        <textarea id="auto-report-to" rows="3" placeholder="ops@company.com, devops@company.com" autocomplete="off"></textarea>
+        <div class="hint">Separate multiple addresses with commas or new lines.</div>
+      </div>
+      <div class="form-row" style="margin-top:1rem">
+        <div class="field">
+          <label>Send on</label>
+          <select id="auto-report-weekday">
+            <option value="0">Monday</option>
+            <option value="1">Tuesday</option>
+            <option value="2">Wednesday</option>
+            <option value="3">Thursday</option>
+            <option value="4" selected>Friday</option>
+            <option value="5">Saturday</option>
+            <option value="6">Sunday</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Time (hour)</label>
+          <select id="auto-report-hour"></select>
+        </div>
+        <div class="field">
+          <label>Report covers (days)</label>
+          <input type="number" id="auto-report-days" value="7" min="1" max="90">
+        </div>
+      </div>
+      <div class="field" style="margin-top:1rem">
+        <label>Services to include</label>
+        <div class="service-pick" id="auto-report-services">
+          <div class="empty">Loading services…</div>
+        </div>
+      </div>
+      <div class="form-row" style="margin-top:1.2rem">
+        <button type="button" class="btn btn-ghost" id="auto-report-test" onclick="testWeeklyReportEmail()">Test email</button>
+        <button type="button" class="btn btn-primary" id="auto-report-save" onclick="saveWeeklyReportSettings()">Save schedule</button>
+      </div>
+      <div class="hint" style="margin-top:.8rem">
+        When enabled, the report runs once per selected day after the chosen hour (server local time).
       </div>
     </div>
   </section>
@@ -826,29 +882,166 @@ function initReportDates() {
 
 async function loadReportServices() {
   initReportDates();
-  const el = document.getElementById("report-services");
+  initAutoReportHourOptions();
   const res = await fetch("/api/services");
   if (res.status === 401) { location.href = "/login"; return; }
   if (!res.ok) {
-    el.innerHTML = `<div class="empty">Could not load services</div>`;
+    document.getElementById("report-services").innerHTML = `<div class="empty">Could not load services</div>`;
+    document.getElementById("auto-report-services").innerHTML = `<div class="empty">Could not load services</div>`;
     return;
   }
   REPORT_SERVICES = await res.json();
+  await loadWeeklyReportSettings();
+}
+
+function initAutoReportHourOptions() {
+  const sel = document.getElementById("auto-report-hour");
+  if (!sel || sel.options.length) return;
+  for (let h = 0; h < 24; h++) {
+    const opt = document.createElement("option");
+    opt.value = String(h);
+    opt.textContent = `${String(h).padStart(2, "0")}:00`;
+    if (h === 9) opt.selected = true;
+    sel.appendChild(opt);
+  }
+}
+
+function renderServicePicker(containerId, selectAllId, checkboxClass, selectedIds = []) {
+  const el = document.getElementById(containerId);
   if (!REPORT_SERVICES.length) {
     el.innerHTML = `<div class="empty">No monitors yet. <a href="/">Add a monitor on the dashboard</a>.</div>`;
     return;
   }
+  const sel = new Set((selectedIds || []).map(Number));
+  const allChecked = !sel.size || REPORT_SERVICES.every(s => sel.has(s.id));
   el.innerHTML = `
-    <label class="pick-all"><input type="checkbox" id="report-select-all" checked onchange="toggleAllReportServices(this.checked)"> Select all</label>
+    <label class="pick-all"><input type="checkbox" id="${selectAllId}" ${allChecked ? "checked" : ""}
+      onchange="toggleServicePicker('${checkboxClass}', this.checked)"> Select all</label>
     ${REPORT_SERVICES.map(s => `
-      <label><input type="checkbox" class="report-svc" value="${s.id}" checked>
+      <label><input type="checkbox" class="${checkboxClass}" value="${s.id}"
+        ${!sel.size || sel.has(s.id) ? "checked" : ""}>
         ${esc(s.name)} <span style="color:var(--muted)">${esc(s.url)}</span></label>
     `).join("")}
   `;
 }
 
-function toggleAllReportServices(on) {
-  document.querySelectorAll(".report-svc").forEach(el => { el.checked = on; });
+function toggleServicePicker(checkboxClass, on) {
+  document.querySelectorAll("." + checkboxClass).forEach(el => { el.checked = on; });
+}
+
+function parseRecipientEmails(text) {
+  return text.split(/[,;\n]+/).map(s => s.trim()).filter(Boolean);
+}
+
+function formatRecipientEmails(emails) {
+  return (emails || []).join(", ");
+}
+
+async function loadWeeklyReportSettings() {
+  const cfgRes = await fetch("/api/settings/weekly-report");
+  const cfg = cfgRes.ok ? await cfgRes.json() : {};
+  renderServicePicker("report-services", "report-select-all", "report-svc", REPORT_SERVICES.map(s => s.id));
+  renderServicePicker("auto-report-services", "auto-report-select-all", "auto-report-svc", cfg.service_ids || []);
+
+  document.getElementById("auto-report-enabled").checked = !!cfg.auto_enabled;
+  const emails = cfg.to_emails?.length ? cfg.to_emails : (cfg.to_email ? [cfg.to_email] : []);
+  document.getElementById("auto-report-to").value = formatRecipientEmails(emails);
+  document.getElementById("auto-report-weekday").value = String(cfg.weekday ?? 4);
+  document.getElementById("auto-report-hour").value = String(cfg.hour ?? 9);
+  document.getElementById("auto-report-days").value = String(cfg.days ?? 7);
+}
+
+function getSelectedAutoReportServices() {
+  return [...document.querySelectorAll(".auto-report-svc:checked")].map(el => parseInt(el.value, 10));
+}
+
+function readWeeklyReportForm() {
+  return {
+    auto_enabled: document.getElementById("auto-report-enabled").checked,
+    to_emails: parseRecipientEmails(document.getElementById("auto-report-to").value),
+    weekday: parseInt(document.getElementById("auto-report-weekday").value, 10),
+    hour: parseInt(document.getElementById("auto-report-hour").value, 10),
+    days: parseInt(document.getElementById("auto-report-days").value, 10) || 7,
+    service_ids: getSelectedAutoReportServices(),
+  };
+}
+
+async function saveWeeklyReportSettings() {
+  const body = readWeeklyReportForm();
+  if (body.auto_enabled && !body.to_emails.length) {
+    toast("At least one recipient email is required when auto send is enabled", "err");
+    return;
+  }
+  if (!body.service_ids.length) {
+    toast("Select at least one service for the scheduled report", "err");
+    return;
+  }
+  const btn = document.getElementById("auto-report-save");
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.innerHTML = `<span class="btn-spinner"></span> Saving…`;
+  try {
+    const res = await fetch("/api/settings/weekly-report", {
+      method: "PUT",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast(data.error || "Could not save schedule", "err");
+      return;
+    }
+    toast("Weekly report schedule saved", "ok");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+
+let weeklyReportTestBusy = false;
+
+async function testWeeklyReportEmail() {
+  if (weeklyReportTestBusy) return;
+
+  const body = readWeeklyReportForm();
+  if (!body.to_emails.length) {
+    toast("Enter at least one recipient email to test", "err");
+    return;
+  }
+  if (!body.service_ids.length) {
+    toast("Select at least one service for the test report", "err");
+    return;
+  }
+
+  weeklyReportTestBusy = true;
+  const btn = document.getElementById("auto-report-test");
+  const label = btn.textContent;
+  btn.disabled = true;
+  document.getElementById("auto-report-save").disabled = true;
+  btn.innerHTML = `<span class="btn-spinner"></span> Testing`;
+
+  try {
+    const res = await fetch("/api/settings/weekly-report/test", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        to_emails: body.to_emails,
+        days: body.days,
+        service_ids: body.service_ids,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast(data.error || "Test email failed", "err");
+      return;
+    }
+    toast(data.message || `Test report sent to ${formatRecipientEmails(body.to_emails)}`, "ok");
+  } finally {
+    weeklyReportTestBusy = false;
+    btn.disabled = false;
+    document.getElementById("auto-report-save").disabled = false;
+    btn.textContent = label;
+  }
 }
 
 function getSelectedReportServices() {

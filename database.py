@@ -69,6 +69,11 @@ SCHEMA = """
         channel_id  INTEGER NOT NULL REFERENCES notification_channels(id) ON DELETE CASCADE,
         PRIMARY KEY (service_id, channel_id)
     );
+    CREATE TABLE IF NOT EXISTS app_settings (
+        key        TEXT PRIMARY KEY,
+        value      TEXT NOT NULL,
+        updated_at TEXT DEFAULT (datetime('now'))
+    );
     CREATE INDEX IF NOT EXISTS idx_checks_svc ON checks(service_id, ts);
     CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
 """

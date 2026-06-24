@@ -34,18 +34,25 @@ def build_pdf_attachment(pdf_path: str) -> MIMEApplication:
     return part
 
 
-def build_message(to_email: str, subject: str, pdf_path: str | None = None) -> MIMEMultipart:
+def build_message(to_emails: str | list[str], subject: str, pdf_path: str | None = None) -> MIMEMultipart:
+    if isinstance(to_emails, list):
+        recipients = [e.strip() for e in to_emails if (e or "").strip()]
+    else:
+        recipients = [e.strip() for e in str(to_emails).replace(";", ",").replace("\n", ",").split(",") if e.strip()]
+    if not recipients:
+        raise ValueError("recipient email is required")
+
     msg = MIMEMultipart()
     msg["Subject"] = subject
     msg["From"]    = f"{MAIL_FROM_NAME} <{MAIL_FROM_ADDRESS}>"
-    msg["To"]      = to_email
+    msg["To"]      = ", ".join(recipients)
     if pdf_path:
         msg.attach(build_pdf_attachment(pdf_path))
-    return msg
+    return msg, recipients
 
 
-def send_email(to_email: str, subject: str | None = None, pdf_path: str | None = None) -> None:
-    message = build_message(to_email, subject or weekly_report_subject(), pdf_path)
+def send_email(to_emails: str | list[str], subject: str | None = None, pdf_path: str | None = None) -> None:
+    message, recipients = build_message(to_emails, subject or weekly_report_subject(), pdf_path)
     context = ssl.create_default_context()
     if MAIL_PORT == 465:
         server_cls = smtplib.SMTP_SSL
@@ -57,12 +64,12 @@ def send_email(to_email: str, subject: str | None = None, pdf_path: str | None =
         if MAIL_PORT != 465:
             server.starttls(context=context)
         server.login(MAIL_USERNAME, MAIL_PASSWORD)
-        server.sendmail(MAIL_FROM_ADDRESS, to_email, message.as_string())
-    print(f"✅ Email sent successfully to {to_email}")
+        server.sendmail(MAIL_FROM_ADDRESS, recipients, message.as_string())
+    print(f"✅ Email sent successfully to {', '.join(recipients)}")
 
 
 if __name__ == "__main__":
     send_email(
-        to_email="limon@technobd.com",
+        "limon@technobd.com",
         pdf_path="data/weekly_uptime.pdf",
     )
