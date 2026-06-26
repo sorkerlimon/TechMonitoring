@@ -8,8 +8,11 @@ import datetime
 import smtplib
 import urllib.request
 from email.mime.text import MIMEText
-from flask import request, jsonify
+from email.mime.multipart import MIMEMultipart
+from email.mime.application import MIMEApplication
+from pathlib import Path
 
+from flask import request, jsonify
 from techlog import get_logger
 
 log = get_logger("notify")
@@ -278,32 +281,45 @@ def _send_webhook(config, message, event, service_name, service_url, extra):
     urllib.request.urlopen(req, timeout=15)
 
 
-def _resolve_email_config(config):
+def _resolve_email_config(config, *, env_fallback=True):
     cfg = dict(config or {})
-    from_addr = (cfg.get("from") or os.environ.get("MAIL_FROM_ADDRESS") or cfg.get("smtp_user") or "").strip()
-    from_name = (os.environ.get("MAIL_FROM_NAME") or "").strip().strip('"')
+    if env_fallback:
+        from_addr = (cfg.get("from") or os.environ.get("MAIL_FROM_ADDRESS") or cfg.get("smtp_user") or "").strip()
+        from_name = (os.environ.get("MAIL_FROM_NAME") or "").strip().strip('"')
+        host = (cfg.get("smtp_host") or os.environ.get("MAIL_HOST") or "").strip()
+        port = int(cfg.get("smtp_port") or os.environ.get("MAIL_PORT") or 587)
+        user = (cfg.get("smtp_user") or os.environ.get("MAIL_USERNAME") or "").strip()
+        password = cfg.get("smtp_pass") or os.environ.get("MAIL_PASSWORD") or ""
+    else:
+        from_addr = (cfg.get("from") or cfg.get("smtp_user") or "").strip()
+        from_name = ""
+        host = (cfg.get("smtp_host") or "").strip()
+        port = int(cfg.get("smtp_port") or 587)
+        user = (cfg.get("smtp_user") or "").strip()
+        password = cfg.get("smtp_pass") or ""
     return {
         "to": (cfg.get("to") or "").strip(),
         "from": from_addr,
         "from_header": f"{from_name} <{from_addr}>" if from_name and from_addr else from_addr,
-        "host": (cfg.get("smtp_host") or os.environ.get("MAIL_HOST") or "").strip(),
-        "port": int(cfg.get("smtp_port") or os.environ.get("MAIL_PORT") or 587),
-        "user": (cfg.get("smtp_user") or os.environ.get("MAIL_USERNAME") or "").strip(),
-        "password": cfg.get("smtp_pass") or os.environ.get("MAIL_PASSWORD") or "",
+        "host": host,
+        "port": port,
+        "user": user,
+        "password": password,
         "use_tls": bool(cfg.get("use_tls", True)),
     }
 
 
-def _send_email(config, subject, message):
-    cfg = _resolve_email_config(config)
-    if not cfg["to"] or not cfg["host"]:
-        raise ValueError("email to and smtp_host required")
+def _pdf_attachment_part(pdf_path: str) -> MIMEApplication:
+    path = Path(pdf_path)
+    if not path.exists():
+        raise FileNotFoundError(f"PDF not found: {pdf_path}")
+    with open(path, "rb") as f:
+        part = MIMEApplication(f.read(), _subtype="pdf")
+    part.add_header("Content-Disposition", "attachment", filename=path.name)
+    return part
 
-    msg = MIMEText(message, "plain", "utf-8")
-    msg["Subject"] = subject
-    msg["From"] = cfg["from_header"] or cfg["from"]
-    msg["To"] = cfg["to"]
 
+def _smtp_send(cfg, from_addr: str, recipients: list[str], message: str) -> None:
     context = ssl.create_default_context()
     port = cfg["port"]
     if port == 465:
@@ -318,7 +334,76 @@ def _send_email(config, subject, message):
             smtp.starttls(context=context)
         if cfg["user"] and cfg["password"]:
             smtp.login(cfg["user"], cfg["password"])
-        smtp.sendmail(cfg["from"] or cfg["user"], [cfg["to"]], msg.as_string())
+        smtp.sendmail(from_addr, recipients, message)
+
+
+def send_email_with_pdf(
+    config,
+    to_emails: str | list[str],
+    subject: str,
+    pdf_path: str,
+    *,
+    env_fallback: bool = False,
+) -> None:
+    cfg = _resolve_email_config(config, env_fallback=env_fallback)
+    if isinstance(to_emails, list):
+        recipients = [e.strip() for e in to_emails if (e or "").strip()]
+    else:
+        recipients = [
+            e.strip()
+            for e in str(to_emails).replace(";", ",").replace("\n", ",").split(",")
+            if e.strip()
+        ]
+    if not recipients:
+        raise ValueError("recipient email is required")
+    if not cfg["host"]:
+        raise ValueError("smtp_host is required in the email notification channel")
+
+    from_addr = cfg["from"] or cfg["user"]
+    if not from_addr:
+        raise ValueError("from address or smtp username is required in the email notification channel")
+
+    msg = MIMEMultipart()
+    msg["Subject"] = subject
+    msg["From"] = cfg["from_header"] or from_addr
+    msg["To"] = ", ".join(recipients)
+    msg.attach(_pdf_attachment_part(pdf_path))
+    _smtp_send(cfg, from_addr, recipients, msg.as_string())
+
+
+def get_channel_by_id(channel_id) -> dict | None:
+    if channel_id in (None, ""):
+        return None
+    try:
+        channel_id = int(channel_id)
+    except (TypeError, ValueError):
+        return None
+    with _db_lock:
+        c = _db()
+        row = c.execute(
+            "SELECT id, name, type, config, events, enabled FROM notification_channels WHERE id=?",
+            (channel_id,),
+        ).fetchone()
+        c.close()
+    if not row:
+        return None
+    ch = dict(row)
+    ch["enabled"] = bool(ch.get("enabled", 1))
+    ch["config"] = json.loads(ch["config"]) if isinstance(ch["config"], str) else ch["config"]
+    return ch
+
+
+def _send_email(config, subject, message):
+    cfg = _resolve_email_config(config)
+    if not cfg["to"] or not cfg["host"]:
+        raise ValueError("email to and smtp_host required")
+
+    msg = MIMEText(message, "plain", "utf-8")
+    msg["Subject"] = subject
+    msg["From"] = cfg["from_header"] or cfg["from"]
+    msg["To"] = cfg["to"]
+    from_addr = cfg["from"] or cfg["user"]
+    _smtp_send(cfg, from_addr, [cfg["to"]], msg.as_string())
 
 
 def deliver_channel(channel, event, service_name, service_url, extra=None):

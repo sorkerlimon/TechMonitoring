@@ -21,6 +21,7 @@ data/*.db
 data/*.sqlite
 data/*.sqlite3
 data/*.log
+data/weekly_report_last.txt
 *.log
 
 # Secrets

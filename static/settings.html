@@ -397,7 +397,7 @@ tbody tr:hover{background:#ffffff05}
       <div class="card-head">
         <div>
           <h2>Automatic weekly email</h2>
-          <p>Generate the PDF report on a schedule and email it automatically. SMTP settings come from <code>.env</code>.</p>
+          <p>Generate the PDF report on a schedule and email it using an SMTP channel from <strong>Settings → Notifications</strong>.</p>
         </div>
       </div>
       <div class="form-row" style="align-items:flex-end">
@@ -408,11 +408,20 @@ tbody tr:hover{background:#ffffff05}
         </label>
       </div>
       <div class="field" style="margin-top:1rem">
+        <label>Email channel (SMTP)</label>
+        <select id="auto-report-email-channel"></select>
+        <div class="hint">Create and configure email channels under the Notifications tab.</div>
+      </div>
+      <div class="field" style="margin-top:1rem">
         <label>Recipient emails</label>
         <textarea id="auto-report-to" rows="3" placeholder="ops@company.com, devops@company.com" autocomplete="off"></textarea>
         <div class="hint">Separate multiple addresses with commas or new lines.</div>
       </div>
       <div class="form-row" style="margin-top:1rem">
+        <div class="field">
+          <label>Timezone</label>
+          <select id="auto-report-timezone"></select>
+        </div>
         <div class="field">
           <label>Send on</label>
           <select id="auto-report-weekday">
@@ -444,8 +453,8 @@ tbody tr:hover{background:#ffffff05}
         <button type="button" class="btn btn-ghost" id="auto-report-test" onclick="testWeeklyReportEmail()">Test email</button>
         <button type="button" class="btn btn-primary" id="auto-report-save" onclick="saveWeeklyReportSettings()">Save schedule</button>
       </div>
-      <div class="hint" style="margin-top:.8rem">
-        When enabled, the report runs once per selected day after the chosen hour (server local time).
+      <div class="hint" id="auto-report-schedule-hint" style="margin-top:.8rem">
+        When enabled, the report runs once per selected day after the chosen hour.
       </div>
     </div>
   </section>
@@ -883,6 +892,7 @@ function initReportDates() {
 async function loadReportServices() {
   initReportDates();
   initAutoReportHourOptions();
+  await loadNotifications();
   const res = await fetch("/api/services");
   if (res.status === 401) { location.href = "/login"; return; }
   if (!res.ok) {
@@ -937,6 +947,33 @@ function formatRecipientEmails(emails) {
   return (emails || []).join(", ");
 }
 
+function renderAutoReportEmailChannels(selectedId) {
+  const sel = document.getElementById("auto-report-email-channel");
+  if (!sel) return;
+  const channels = NOTIFY_CHANNELS.filter(ch => ch.type === "email");
+  if (!channels.length) {
+    sel.innerHTML = `<option value="">No email channels — create one in Notifications</option>`;
+    return;
+  }
+  const selected = selectedId != null && selectedId !== "" ? String(selectedId) : "";
+  sel.innerHTML = channels.map(ch => {
+    const suffix = ch.enabled === false ? " (disabled)" : "";
+    return `<option value="${ch.id}"${String(ch.id) === selected ? " selected" : ""}>${esc(ch.name)}${suffix}</option>`;
+  }).join("");
+  if (!selected && channels.length) {
+    const firstEnabled = channels.find(ch => ch.enabled !== false) || channels[0];
+    sel.value = String(firstEnabled.id);
+  }
+}
+
+function renderAutoReportTimezoneOptions(options, selected) {
+  const sel = document.getElementById("auto-report-timezone");
+  if (!sel) return;
+  const tz = selected || "UTC";
+  const list = (options && options.length) ? options : ["UTC"];
+  sel.innerHTML = list.map(z => `<option value="${esc(z)}"${z === tz ? " selected" : ""}>${esc(z)}</option>`).join("");
+}
+
 async function loadWeeklyReportSettings() {
   const cfgRes = await fetch("/api/settings/weekly-report");
   const cfg = cfgRes.ok ? await cfgRes.json() : {};
@@ -944,11 +981,16 @@ async function loadWeeklyReportSettings() {
   renderServicePicker("auto-report-services", "auto-report-select-all", "auto-report-svc", cfg.service_ids || []);
 
   document.getElementById("auto-report-enabled").checked = !!cfg.auto_enabled;
+  renderAutoReportEmailChannels(cfg.email_channel_id);
   const emails = cfg.to_emails?.length ? cfg.to_emails : (cfg.to_email ? [cfg.to_email] : []);
   document.getElementById("auto-report-to").value = formatRecipientEmails(emails);
+  renderAutoReportTimezoneOptions(cfg.timezone_options, cfg.timezone || "UTC");
   document.getElementById("auto-report-weekday").value = String(cfg.weekday ?? 4);
   document.getElementById("auto-report-hour").value = String(cfg.hour ?? 9);
   document.getElementById("auto-report-days").value = String(cfg.days ?? 7);
+  const tz = cfg.timezone || "UTC";
+  document.getElementById("auto-report-schedule-hint").textContent =
+    `When enabled, the report runs once per selected day after the chosen hour (${tz}).`;
 }
 
 function getSelectedAutoReportServices() {
@@ -956,9 +998,12 @@ function getSelectedAutoReportServices() {
 }
 
 function readWeeklyReportForm() {
+  const channelRaw = document.getElementById("auto-report-email-channel").value;
   return {
     auto_enabled: document.getElementById("auto-report-enabled").checked,
+    email_channel_id: channelRaw ? parseInt(channelRaw, 10) : null,
     to_emails: parseRecipientEmails(document.getElementById("auto-report-to").value),
+    timezone: document.getElementById("auto-report-timezone").value || "UTC",
     weekday: parseInt(document.getElementById("auto-report-weekday").value, 10),
     hour: parseInt(document.getElementById("auto-report-hour").value, 10),
     days: parseInt(document.getElementById("auto-report-days").value, 10) || 7,
@@ -970,6 +1015,10 @@ async function saveWeeklyReportSettings() {
   const body = readWeeklyReportForm();
   if (body.auto_enabled && !body.to_emails.length) {
     toast("At least one recipient email is required when auto send is enabled", "err");
+    return;
+  }
+  if (body.auto_enabled && !body.email_channel_id) {
+    toast("Select an email notification channel for SMTP", "err");
     return;
   }
   if (!body.service_ids.length) {
@@ -1008,6 +1057,10 @@ async function testWeeklyReportEmail() {
     toast("Enter at least one recipient email to test", "err");
     return;
   }
+  if (!body.email_channel_id) {
+    toast("Select an email notification channel to test", "err");
+    return;
+  }
   if (!body.service_ids.length) {
     toast("Select at least one service for the test report", "err");
     return;
@@ -1025,7 +1078,9 @@ async function testWeeklyReportEmail() {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({
+        email_channel_id: body.email_channel_id,
         to_emails: body.to_emails,
+        timezone: body.timezone,
         days: body.days,
         service_ids: body.service_ids,
       }),

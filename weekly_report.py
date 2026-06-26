@@ -3,15 +3,21 @@
 from __future__ import annotations
 
 import datetime
+import os
 import threading
 import time
 from pathlib import Path
-
-import os
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from database import db, DB_LOCK
+import notification
 from report_pdf import fetch_service_report_stats, build_report_pdf
-from report_settings import get_weekly_settings, report_config, parse_recipient_emails
+from report_settings import (
+    get_weekly_settings,
+    get_weekly_last_run_date,
+    parse_recipient_emails,
+    set_weekly_last_run_date,
+)
 from techlog import get_logger
 
 log = get_logger("weekly")
@@ -19,10 +25,44 @@ log = get_logger("weekly")
 _TEST_SEND_LOCK = threading.Lock()
 _RECENT_TEST_SENDS: dict[str, float] = {}
 _TEST_DEDUP_SECONDS = 90
+_SCHEDULER_POLL_SECONDS = 30
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "data"))
-LAST_RUN_FILE = DATA_DIR / "weekly_report_last.txt"
 DEFAULT_PDF = DATA_DIR / "weekly_uptime.pdf"
+
+
+def schedule_timezone_name() -> str:
+    return get_weekly_settings().get("timezone") or "UTC"
+
+
+def weekly_report_subject(end_date: datetime.date) -> str:
+    return f"Weekly Monitoring Report ({end_date.year}-{end_date.month}-{end_date.day})"
+
+
+def _load_email_channel(channel_id: int | None) -> dict:
+    channel = notification.get_channel_by_id(channel_id)
+    if not channel:
+        raise ValueError("select an email notification channel in Settings → Reports")
+    if channel["type"] != "email":
+        raise ValueError("selected channel must be an email (SMTP) notification channel")
+    if not channel.get("enabled", True):
+        raise ValueError("selected email notification channel is disabled")
+    cfg = channel["config"] or {}
+    if not (cfg.get("smtp_host") or "").strip():
+        raise ValueError("selected email channel is missing SMTP host — edit it under Notifications")
+    return channel
+
+
+def _report_timezone() -> ZoneInfo:
+    try:
+        return ZoneInfo(schedule_timezone_name())
+    except ZoneInfoNotFoundError:
+        log.warning("Unknown timezone %r — using UTC for weekly report schedule", schedule_timezone_name())
+        return ZoneInfo("UTC")
+
+
+def _schedule_now() -> datetime.datetime:
+    return datetime.datetime.now(_report_timezone())
 
 
 def generate_report_for_range(
@@ -68,28 +108,42 @@ def generate_last_n_days_report(
     return pdf_path, start_date, end_date, stats
 
 
-def _already_ran_today() -> bool:
-    if not LAST_RUN_FILE.exists():
-        return False
-    try:
-        return LAST_RUN_FILE.read_text(encoding="utf-8").strip() == datetime.date.today().isoformat()
-    except OSError:
-        return False
+def _schedule_slot_key() -> str:
+    s = get_weekly_settings()
+    return "|".join([
+        _schedule_now().date().isoformat(),
+        str(s.get("weekday", 4)),
+        str(s.get("hour", 9)),
+        s.get("timezone") or "UTC",
+    ])
 
 
-def _mark_ran_today() -> None:
-    LAST_RUN_FILE.parent.mkdir(parents=True, exist_ok=True)
-    LAST_RUN_FILE.write_text(datetime.date.today().isoformat(), encoding="utf-8")
+def _already_ran_this_slot() -> bool:
+    last = get_weekly_last_run_date()
+    if not last:
+        return False
+    return last == _schedule_slot_key()
+
+
+def _mark_ran_this_slot() -> None:
+    set_weekly_last_run_date(_schedule_slot_key())
 
 
 def run_weekly_report_job() -> None:
-    enabled, to_addrs, _, _, days, service_ids = report_config()
-    if not enabled:
+    s = get_weekly_settings()
+    if not s["auto_enabled"]:
         return
-    if not to_addrs:
+    if not s["to_emails"]:
         raise ValueError("recipient emails are not configured in Settings → Reports")
+    if not s.get("email_channel_id"):
+        raise ValueError("email notification channel is not configured in Settings → Reports")
 
-    send_weekly_report_email(to_addrs, days, service_ids)
+    send_weekly_report_email(
+        s["to_emails"],
+        s["days"],
+        s["service_ids"],
+        email_channel_id=s["email_channel_id"],
+    )
 
 
 def _test_send_key(to_emails: str | list[str], days: int, service_ids: list[int] | None) -> str:
@@ -121,20 +175,28 @@ def send_weekly_report_email(
     days: int = 7,
     service_ids: list[int] | None = None,
     *,
+    email_channel_id: int | None = None,
     test: bool = False,
 ) -> dict:
     recipients = parse_recipient_emails(to_emails)
     if not recipients:
         raise ValueError("recipient email is required")
 
-    from mail_send import send_email, weekly_report_subject
+    channel_id = email_channel_id or get_weekly_settings().get("email_channel_id")
+    channel = _load_email_channel(channel_id)
 
     ids = service_ids or None
     pdf_path, start_date, end_date, stats = generate_last_n_days_report(days, service_ids=ids)
     subject = weekly_report_subject(end_date)
     if test:
         subject = f"[TEST] {subject}"
-    send_email(recipients, subject, str(pdf_path))
+    notification.send_email_with_pdf(
+        channel["config"],
+        recipients,
+        subject,
+        str(pdf_path),
+        env_fallback=False,
+    )
     recipient_label = ", ".join(recipients)
     log.info(
         "Weekly report %semail sent to %s (%s services, %s to %s)",
@@ -151,21 +213,50 @@ def send_weekly_report_email(
 
 
 def run_weekly_report_if_due() -> None:
-    enabled, to_addrs, hour, weekday, _, _ = report_config()
-    if not enabled or not to_addrs:
+    s = get_weekly_settings()
+    if not s["auto_enabled"] or not s["to_emails"] or not s.get("email_channel_id"):
         return
 
-    now = datetime.datetime.now()
-    if now.weekday() != weekday or now.hour < hour:
+    now = _schedule_now()
+    if now.weekday() != s["weekday"] or now.hour < s["hour"]:
         return
-    if _already_ran_today():
+    if _already_ran_this_slot():
         return
 
+    weekdays = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+    log.info(
+        "Weekly report due — sending scheduled email (%s %02d:%02d %s)",
+        weekdays[s["weekday"]] if 0 <= s["weekday"] <= 6 else "?",
+        s["hour"],
+        now.minute,
+        s.get("timezone") or "UTC",
+    )
     try:
         run_weekly_report_job()
-        _mark_ran_today()
+        _mark_ran_this_slot()
     except Exception:
         log.exception("Scheduled weekly report failed")
+
+
+def log_scheduler_status() -> None:
+    s = get_weekly_settings()
+    weekdays = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+    tz = schedule_timezone_name()
+    if s["auto_enabled"] and s["to_emails"] and s.get("email_channel_id"):
+        log.info(
+            "Weekly report scheduler active — %s at %02d:00 %s via channel #%s, last %s days → %s",
+            weekdays[s["weekday"]] if 0 <= s["weekday"] <= 6 else "Fri",
+            s["hour"],
+            tz,
+            s["email_channel_id"],
+            s["days"],
+            ", ".join(s["to_emails"]),
+        )
+    else:
+        log.info(
+            "Weekly report scheduler running (%s) — enable in Settings → Reports to send email",
+            tz,
+        )
 
 
 _scheduler_started = False
@@ -181,21 +272,9 @@ def start_weekly_report_scheduler() -> None:
         while True:
             try:
                 run_weekly_report_if_due()
-            except Exception as e:
-                log.error("Weekly report scheduler check failed: %s", e)
-            time.sleep(300)
+            except Exception:
+                log.exception("Weekly report scheduler check failed")
+            time.sleep(_SCHEDULER_POLL_SECONDS)
 
     threading.Thread(target=_loop, daemon=True, name="weekly-report").start()
-
-    s = get_weekly_settings()
-    weekdays = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
-    if s["auto_enabled"] and s["to_emails"]:
-        log.info(
-            "Weekly report scheduler active — %s at %02d:00, last %s days → %s",
-            weekdays[s["weekday"]] if 0 <= s["weekday"] <= 6 else "Fri",
-            s["hour"],
-            s["days"],
-            ", ".join(s["to_emails"]),
-        )
-    else:
-        log.info("Weekly report scheduler running — enable in Settings → Reports to send email")
+    log_scheduler_status()

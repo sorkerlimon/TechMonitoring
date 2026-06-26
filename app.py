@@ -21,7 +21,9 @@ from report_settings import (
     migrate_weekly_settings_from_env,
     resolve_recipient_emails,
     invalid_recipient_emails,
+    REPORT_TIMEZONES,
 )
+import notification
 from techlog import setup_logging, get_logger
 
 setup_logging()
@@ -1301,7 +1303,37 @@ def settings_page():
 def api_get_weekly_report_settings():
     if not current_user():
         return jsonify({"error": "login required"}), 401
-    return jsonify(get_weekly_settings())
+    return jsonify({
+        **get_weekly_settings(),
+        "timezone_options": list(REPORT_TIMEZONES),
+    })
+
+
+def _weekly_email_channel_error(channel_id) -> str | None:
+    if not channel_id:
+        return "email notification channel is required"
+    ch = notification.get_channel_by_id(channel_id)
+    if not ch:
+        return "email notification channel not found"
+    if ch["type"] != "email":
+        return "selected channel must be an email (SMTP) notification channel"
+    if not ch.get("enabled", True):
+        return "selected email notification channel is disabled"
+    cfg = ch.get("config") or {}
+    if not (cfg.get("smtp_host") or "").strip():
+        return "selected email channel is missing SMTP host — edit it under Notifications"
+    return None
+
+
+def _resolve_email_channel_id(payload: dict, saved: dict | None = None) -> int | None:
+    saved = saved or {}
+    raw = payload.get("email_channel_id", saved.get("email_channel_id"))
+    if raw in (None, ""):
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 @app.route("/api/settings/weekly-report", methods=["PUT"])
@@ -1310,12 +1342,19 @@ def api_save_weekly_report_settings():
         return jsonify({"error": "login required"}), 401
     d = request.json or {}
     to_emails = resolve_recipient_emails(d)
-    if d.get("auto_enabled") and not to_emails:
-        return jsonify({"error": "recipient email required when auto send is enabled"}), 400
+    email_channel_id = _resolve_email_channel_id(d)
+    if d.get("auto_enabled"):
+        if not to_emails:
+            return jsonify({"error": "recipient email required when auto send is enabled"}), 400
+        err = _weekly_email_channel_error(email_channel_id)
+        if err:
+            return jsonify({"error": err}), 400
     bad = invalid_recipient_emails(to_emails)
     if bad:
         return jsonify({"error": f"invalid email address: {bad[0]}"}), 400
-    saved = save_weekly_settings({**d, "to_emails": to_emails})
+    saved = save_weekly_settings({**d, "to_emails": to_emails, "email_channel_id": email_channel_id})
+    from weekly_report import log_scheduler_status
+    log_scheduler_status()
     return jsonify({"ok": True, "settings": saved})
 
 
@@ -1347,6 +1386,11 @@ def api_test_weekly_report():
     if not service_ids:
         return jsonify({"error": "select at least one service"}), 400
 
+    email_channel_id = _resolve_email_channel_id(d, saved)
+    err = _weekly_email_channel_error(email_channel_id)
+    if err:
+        return jsonify({"error": err}), 400
+
     recipient_label = ", ".join(to_emails)
     if not acquire_test_send_slot(to_emails, days, service_ids):
         log.info("Weekly report test email deduped for %s (duplicate request)", recipient_label)
@@ -1357,7 +1401,13 @@ def api_test_weekly_report():
         })
 
     try:
-        result = send_weekly_report_email(to_emails, days=days, service_ids=service_ids, test=True)
+        result = send_weekly_report_email(
+            to_emails,
+            days=days,
+            service_ids=service_ids,
+            email_channel_id=email_channel_id,
+            test=True,
+        )
     except Exception as e:
         release_test_send_slot(to_emails, days, service_ids)
         log.warning("Weekly report test email failed: %s", e)

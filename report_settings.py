@@ -4,20 +4,48 @@ from __future__ import annotations
 
 import json
 import re
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from database import db, DB_LOCK
 
 SETTINGS_KEY = "weekly_report"
+LAST_RUN_KEY = "weekly_report_last_run"
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+REPORT_TIMEZONES = (
+    "UTC",
+    "Europe/London",
+    "Asia/Dhaka",
+    "Asia/Dubai",
+    "Asia/Kolkata",
+    "Asia/Singapore",
+    "Europe/Berlin",
+    "Europe/Paris",
+    "America/New_York",
+    "America/Chicago",
+    "America/Los_Angeles",
+    "Australia/Sydney",
+)
 
 DEFAULTS = {
     "auto_enabled": False,
+    "email_channel_id": None,
     "to_emails": [],
+    "timezone": "UTC",
     "weekday": 4,
     "hour": 9,
     "days": 7,
     "service_ids": [],
 }
+
+
+def normalize_timezone(value) -> str:
+    tz = (value or "UTC").strip()
+    try:
+        ZoneInfo(tz)
+        return tz
+    except ZoneInfoNotFoundError:
+        return "UTC"
 
 
 def parse_recipient_emails(value) -> list[str]:
@@ -66,6 +94,12 @@ def _normalize(raw: dict | None) -> dict:
     data["to_emails"] = emails
     data.pop("to_email", None)
     try:
+        raw_channel = data.get("email_channel_id")
+        data["email_channel_id"] = int(raw_channel) if raw_channel not in (None, "") else None
+    except (TypeError, ValueError):
+        data["email_channel_id"] = None
+    data["timezone"] = normalize_timezone(data.get("timezone"))
+    try:
         data["weekday"] = int(data.get("weekday", 4))
     except (TypeError, ValueError):
         data["weekday"] = 4
@@ -90,6 +124,43 @@ def _normalize(raw: dict | None) -> dict:
     return data
 
 
+def get_weekly_last_run_date() -> str | None:
+    with DB_LOCK:
+        c = db()
+        row = c.execute(
+            "SELECT value FROM app_settings WHERE key=?",
+            (LAST_RUN_KEY,),
+        ).fetchone()
+        c.close()
+    if not row:
+        return None
+    value = (row["value"] or "").strip()
+    return value or None
+
+
+def set_weekly_last_run_date(slot_key: str) -> None:
+    with DB_LOCK:
+        c = db()
+        c.execute(
+            """INSERT INTO app_settings(key, value, updated_at)
+               VALUES(?, ?, datetime('now'))
+               ON CONFLICT(key) DO UPDATE SET
+                 value=excluded.value,
+                 updated_at=excluded.updated_at""",
+            (LAST_RUN_KEY, slot_key),
+        )
+        c.commit()
+        c.close()
+
+
+def clear_weekly_last_run() -> None:
+    with DB_LOCK:
+        c = db()
+        c.execute("DELETE FROM app_settings WHERE key=?", (LAST_RUN_KEY,))
+        c.commit()
+        c.close()
+
+
 def get_weekly_settings() -> dict:
     with DB_LOCK:
         c = db()
@@ -107,7 +178,11 @@ def get_weekly_settings() -> dict:
 
 
 def save_weekly_settings(payload: dict) -> dict:
+    previous = get_weekly_settings()
     data = _normalize(payload)
+    schedule_keys = ("weekday", "hour", "timezone", "auto_enabled")
+    if any(previous.get(k) != data.get(k) for k in schedule_keys):
+        clear_weekly_last_run()
     with DB_LOCK:
         c = db()
         c.execute(
@@ -123,7 +198,7 @@ def save_weekly_settings(payload: dict) -> dict:
     return data
 
 
-def report_config() -> tuple[bool, list[str], int, int, int, list[int]]:
+def report_config() -> tuple[bool, list[str], int, int, int, list[int], int | None, str]:
     s = get_weekly_settings()
     return (
         s["auto_enabled"],
@@ -132,6 +207,8 @@ def report_config() -> tuple[bool, list[str], int, int, int, list[int]]:
         s["weekday"],
         s["days"],
         s["service_ids"],
+        s["email_channel_id"],
+        s["timezone"],
     )
 
 

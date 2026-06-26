@@ -17,7 +17,7 @@ services:
       - ./:/app
     working_dir: /app
     user: "0:0"
-    command: sh -c "mkdir -p /app/data && touch /app/data/uptime.db /app/data/tech.log && chmod 666 /app/data/uptime.db /app/data/tech.log && exec gunicorn --bind 0.0.0.0:8080 --workers 1 --threads 4 --timeout 60 --reload app:app"
+    command: sh -c "mkdir -p /app/data && touch /app/data/uptime.db /app/data/tech.log && chmod 666 /app/data/uptime.db /app/data/tech.log && exec gunicorn -c gunicorn.conf.py --bind 0.0.0.0:8080 --workers 1 --threads 4 --timeout 60 --reload app:app"
     stop_grace_period: 30s
     security_opt:
       - no-new-privileges:true
