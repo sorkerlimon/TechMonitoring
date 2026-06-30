@@ -319,27 +319,48 @@ class _ReportPDF(FPDF):
         self.ln(4)
 
     def _metric_row(self, label: str, value: str, alt: bool = False):
+        table_x = 14
+        table_w = 182
+        pad = 5
+        value_w = 58
+        row_h = 9
         y = self.get_y()
-        h = 9
+
         if alt:
             self.set_fill_color(*_ROW_ALT)
-            self.rect(14, y, 182, h, style="F")
-        self.set_xy(18, y + 2.5)
+            self.rect(table_x, y, table_w, row_h, style="F")
+
+        label_w = table_w - (pad * 2) - value_w
+        x_label = table_x + pad
+        x_value = table_x + table_w - pad - value_w
+
+        self.set_xy(x_label, y + 2.5)
         self.set_font("Helvetica", "", 9)
         self.set_text_color(*_TEXT)
-        self.cell(110, 5, label)
+        self.cell(label_w, 5, label)
+
+        self.set_xy(x_value, y + 2.5)
         self.set_font("Helvetica", "B", 9)
         self.set_text_color(*_NAVY_MID)
-        self.cell(74, 5, _safe_text(value), align="R", new_x="LMARGIN", new_y="NEXT")
-        self.set_y(y + h)
+        self.cell(value_w, 5, _safe_text(value), align="R")
+
+        self.set_y(y + row_h)
 
     def _draw_metrics_table(self, sections: list[tuple[str, list[tuple[str, str]]]]):
+        table_x = 14
+        table_w = 182
         row_idx = 0
         for section_title, rows in sections:
             self._section_title(section_title)
+            block_y = self.get_y()
             for label, value in rows:
                 self._metric_row(label, value, alt=row_idx % 2 == 0)
                 row_idx += 1
+            block_h = self.get_y() - block_y
+            if block_h > 0:
+                self.set_draw_color(*_BORDER)
+                self.rect(table_x, block_y, table_w, block_h, style="D")
+            self.ln(3)
 
 
 def build_report_pdf(
