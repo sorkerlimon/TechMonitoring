@@ -193,6 +193,65 @@ _WHITE = (255, 255, 255)
 _TEXT = (30, 41, 59)
 _SUCCESS = (22, 163, 74)
 _WARN = (217, 119, 6)
+_DANGER = (220, 38, 38)
+
+
+def _service_health_status(stats: dict) -> tuple[str, tuple[int, int, int]]:
+    uptime = stats["range_uptime_pct"]
+    peaks = stats["peaks_over_1000"]
+    downtime = stats.get("total_downtime_seconds", 0)
+    if uptime < 95 or downtime > 3600:
+        return "Critical", _DANGER
+    if uptime < 99.9 or peaks > 0 or downtime > 0:
+        return "Warning", _WARN
+    return "Healthy", _SUCCESS
+
+
+def _aggregate_cover_stats(services_stats: list[dict]) -> dict:
+    n = len(services_stats)
+    avg_uptime = round(sum(s["range_uptime_pct"] for s in services_stats) / n, 2) if n else 100.0
+    total_downtime = sum(s.get("total_downtime_seconds", 0) for s in services_stats)
+    total_peaks = sum(s["peaks_over_1000"] for s in services_stats)
+    total_checks = sum(s.get("total_checks", 0) for s in services_stats)
+    issues = sum(1 for s in services_stats if _service_health_status(s)[0] != "Healthy")
+    expiring: list[tuple[str, str, str, int]] = []
+    for s in services_stats:
+        for key, label in (("ssl_expiry", "Certificate"), ("domain_expiry", "Domain")):
+            days = _days_until(s.get(key))
+            if days is not None and days <= 30:
+                expiring.append((s["name"], label, str(s.get(key))[:10], days))
+    return {
+        "service_count": n,
+        "avg_uptime": avg_uptime,
+        "total_downtime": total_downtime,
+        "total_peaks": total_peaks,
+        "total_checks": total_checks,
+        "issues": issues,
+        "expiring": expiring,
+    }
+
+
+def _executive_summary_text(range_label: str, agg: dict) -> str:
+    n = agg["service_count"]
+    uptime = agg["avg_uptime"]
+    parts = [
+        f"All {n} service{'s' if n != 1 else ''} were monitored during {range_label}.",
+        f"Average uptime was {uptime:.2f}%.",
+    ]
+    if agg["total_downtime"] > 0:
+        parts.append(f"Total downtime across services was {_fmt_duration(agg['total_downtime'])}.")
+    else:
+        parts.append("No downtime was recorded in this period.")
+    if agg["total_peaks"] > 0:
+        parts.append(
+            f"{agg['total_peaks']} slow response peak{'s' if agg['total_peaks'] != 1 else ''} "
+            f"above 1000 ms were detected."
+        )
+    if agg["issues"]:
+        parts.append(f"{agg['issues']} service{'s' if agg['issues'] != 1 else ''} need attention.")
+    else:
+        parts.append("All services are operating within healthy thresholds.")
+    return " ".join(parts)
 
 
 class _ReportPDF(FPDF):
@@ -211,6 +270,10 @@ class _ReportPDF(FPDF):
 
     def _draw_cover(self, range_label: str, generated: str, services_stats: list[dict]):
         self.add_page()
+        agg = _aggregate_cover_stats(services_stats)
+        table_x = 14
+        table_w = 182
+
         self.set_fill_color(*_NAVY)
         self.rect(0, 0, 210, 58, style="F")
         self.set_fill_color(*_ACCENT)
@@ -224,47 +287,180 @@ class _ReportPDF(FPDF):
         self.set_text_color(186, 198, 214)
         self.cell(0, 7, "Uptime & Performance Report", align="C", new_x="LMARGIN", new_y="NEXT")
 
-        self.set_y(72)
-        box_w = 88
-        gap = 6
-        x1, x2 = 14, 14 + box_w + gap
-        for x, label, value in (
-            (x1, "Report Period", range_label),
-            (x2, "Generated", generated),
-        ):
+        self._draw_cover_info_boxes(range_label, generated, agg)
+        self._draw_cover_kpi_row(agg)
+        self._draw_cover_summary(range_label, agg)
+        self._draw_cover_overview_table(services_stats)
+        if agg["expiring"]:
+            self._draw_cover_expiring_alerts(agg["expiring"])
+
+        self.ln(4)
+        self.set_font("Helvetica", "", 7)
+        self.set_text_color(*_MUTED)
+        self.cell(0, 4, "Detailed metrics for each service begin on the following pages.", align="C")
+
+    def _draw_cover_info_boxes(self, range_label: str, generated: str, agg: dict):
+        boxes = [
+            ("Report Period", range_label),
+            ("Generated", generated),
+            ("Services", str(agg["service_count"])),
+            ("Total Checks", str(agg["total_checks"])),
+        ]
+        gap = 4
+        box_w = (182 - gap * (len(boxes) - 1)) / len(boxes)
+        y = 68
+        for i, (label, value) in enumerate(boxes):
+            x = 14 + i * (box_w + gap)
             self.set_fill_color(*_LIGHT)
             self.set_draw_color(*_BORDER)
-            self.rect(x, 72, box_w, 22, style="FD")
-            self.set_xy(x + 5, 76)
-            self.set_font("Helvetica", "", 7)
+            self.rect(x, y, box_w, 20, style="FD")
+            self.set_xy(x + 4, y + 3)
+            self.set_font("Helvetica", "", 6)
             self.set_text_color(*_SLATE)
-            self.cell(box_w - 10, 4, label.upper(), new_x="LMARGIN", new_y="NEXT")
-            self.set_x(x + 5)
-            self.set_font("Helvetica", "B", 11)
+            self.cell(box_w - 8, 3, label.upper(), new_x="LMARGIN", new_y="NEXT")
+            self.set_x(x + 4)
+            self.set_font("Helvetica", "B", 9 if i < 2 else 11)
             self.set_text_color(*_NAVY)
-            self.cell(box_w - 10, 7, value, new_x="LMARGIN", new_y="NEXT")
+            display = _safe_text(value)
+            if len(display) > 22 and i < 2:
+                self.set_font("Helvetica", "B", 8)
+            self.cell(box_w - 8, 6, display, new_x="LMARGIN", new_y="NEXT")
+        self.set_y(y + 26)
 
-        self.set_y(102)
-        self.set_font("Helvetica", "B", 9)
+    def _draw_cover_kpi_row(self, agg: dict):
+        uptime = agg["avg_uptime"]
+        uptime_color = _SUCCESS if uptime >= 99.9 else (_WARN if uptime >= 95 else _DANGER)
+        issues = agg["issues"]
+        issues_color = _SUCCESS if issues == 0 else _WARN
+        boxes = [
+            ("Avg Uptime", f"{uptime:.2f}%", uptime_color),
+            ("Need Attention", str(issues), issues_color),
+            ("Total Downtime", _fmt_duration(agg["total_downtime"]), _NAVY),
+            ("Peaks > 1000ms", str(agg["total_peaks"]), _NAVY),
+        ]
+        gap = 4
+        w = (182 - gap * 3) / 4
+        y = self.get_y() + 2
+        self.set_font("Helvetica", "B", 8)
         self.set_text_color(*_ACCENT)
-        self.cell(0, 6, "SERVICES INCLUDED", new_x="LMARGIN", new_y="NEXT")
-        self.set_draw_color(*_BORDER)
-        self.line(14, self.get_y() + 1, 196, self.get_y() + 1)
-        self.ln(5)
+        self.cell(0, 5, "EXECUTIVE OVERVIEW", new_x="LMARGIN", new_y="NEXT")
+        self.ln(2)
+        y = self.get_y()
+        for i, (label, value, color) in enumerate(boxes):
+            x = 14 + i * (w + gap)
+            self.set_fill_color(*_WHITE)
+            self.set_draw_color(*_BORDER)
+            self.rect(x, y, w, 22, style="FD")
+            self.set_fill_color(*_ACCENT)
+            self.rect(x, y, w, 1.2, style="F")
+            self.set_xy(x + 3, y + 4)
+            self.set_font("Helvetica", "", 6)
+            self.set_text_color(*_SLATE)
+            self.cell(w - 6, 3, label.upper(), new_x="LMARGIN", new_y="NEXT")
+            self.set_xy(x + 3, y + 11)
+            self.set_font("Helvetica", "B", 12)
+            self.set_text_color(*color)
+            self.cell(w - 6, 7, _safe_text(value), new_x="LMARGIN", new_y="NEXT")
+        self.set_y(y + 28)
 
-        self.set_font("Helvetica", "", 10)
+    def _draw_cover_summary(self, range_label: str, agg: dict):
+        self.ln(2)
+        self.set_font("Helvetica", "B", 8)
+        self.set_text_color(*_ACCENT)
+        self.cell(0, 5, "SUMMARY", new_x="LMARGIN", new_y="NEXT")
+        self.ln(1)
+        self.set_font("Helvetica", "", 9)
         self.set_text_color(*_TEXT)
+        self.set_x(14)
+        self.multi_cell(182, 4.5, _safe_text(_executive_summary_text(range_label, agg)))
+        self.ln(3)
+
+    def _draw_cover_overview_table(self, services_stats: list[dict]):
+        table_x = 14
+        table_w = 182
+        pad = 5
+        row_h = 8
+        cols = (
+            ("Service", 58),
+            ("Uptime", 32),
+            ("Avg Response", 42),
+            ("Status", 30),
+        )
+
+        self.set_font("Helvetica", "B", 8)
+        self.set_text_color(*_ACCENT)
+        self.cell(0, 5, "SERVICE HEALTH OVERVIEW", new_x="LMARGIN", new_y="NEXT")
+        self.ln(2)
+
+        header_y = self.get_y()
+        y = header_y
+        self.set_fill_color(*_NAVY_MID)
+        self.rect(table_x, y, table_w, row_h, style="F")
+        x = table_x + pad
+        self.set_xy(x, y + 2)
+        self.set_font("Helvetica", "B", 7)
+        self.set_text_color(*_WHITE)
+        for label, width in cols:
+            self.cell(width, 4, label.upper())
+        self.set_y(y + row_h)
+
         for i, stats in enumerate(services_stats):
-            self.set_fill_color(*(_ROW_ALT if i % 2 else _WHITE))
             y = self.get_y()
-            self.rect(14, y, 182, 8, style="F")
-            self.set_xy(18, y + 2)
-            self.set_font("Helvetica", "B", 9)
-            self.cell(50, 5, _safe_text(stats["name"]))
+            if i % 2 == 0:
+                self.set_fill_color(*_ROW_ALT)
+                self.rect(table_x, y, table_w, row_h, style="F")
+            status, status_color = _service_health_status(stats)
+            x = table_x + pad
+            self.set_xy(x, y + 2)
+            self.set_font("Helvetica", "B", 8)
+            self.set_text_color(*_TEXT)
+            name = _safe_text(stats["name"])
+            if len(name) > 24:
+                name = name[:23] + "..."
+            self.cell(cols[0][1], 4, name)
+            self.set_font("Helvetica", "", 8)
+            uptime = stats["range_uptime_pct"]
+            up_color = _SUCCESS if uptime >= 99.9 else (_WARN if uptime >= 95 else _DANGER)
+            self.set_text_color(*up_color)
+            self.cell(cols[1][1], 4, f"{uptime:.2f}%")
+            self.set_text_color(*_TEXT)
+            self.cell(cols[2][1], 4, f"{stats['range_avg_response_ms']:.0f} ms")
+            self.set_font("Helvetica", "B", 8)
+            self.set_text_color(*status_color)
+            self.cell(cols[3][1], 4, status)
+            self.set_y(y + row_h)
+
+        self.set_draw_color(*_BORDER)
+        self.rect(table_x, header_y, table_w, self.get_y() - header_y, style="D")
+        self.ln(4)
+
+    def _draw_cover_expiring_alerts(self, expiring: list[tuple[str, str, str, int]]):
+        table_x = 14
+        table_w = 182
+        self.set_font("Helvetica", "B", 8)
+        self.set_text_color(*_WARN)
+        self.cell(0, 5, "EXPIRING SOON (WITHIN 30 DAYS)", new_x="LMARGIN", new_y="NEXT")
+        self.ln(2)
+        block_y = self.get_y()
+        for i, (service, kind, date_str, days) in enumerate(expiring):
+            y = self.get_y()
+            if i % 2 == 0:
+                self.set_fill_color(*_ROW_ALT)
+                self.rect(table_x, y, table_w, 8, style="F")
+            self.set_xy(table_x + 5, y + 2)
+            self.set_font("Helvetica", "B", 8)
+            self.set_text_color(*_TEXT)
+            self.cell(45, 4, _safe_text(service))
             self.set_font("Helvetica", "", 8)
             self.set_text_color(*_SLATE)
-            self.cell(0, 5, _safe_text(stats["url"]), new_x="LMARGIN", new_y="NEXT")
-            self.ln(2)
+            self.cell(50, 4, kind)
+            self.set_text_color(*_WARN)
+            self.cell(0, 4, f"{date_str} ({days} days)", new_x="LMARGIN", new_y="NEXT")
+        block_h = self.get_y() - block_y
+        if block_h > 0:
+            self.set_draw_color(*_BORDER)
+            self.rect(table_x, block_y, table_w, block_h, style="D")
+        self.ln(3)
 
     def _draw_service_header(self, stats: dict):
         y = self.get_y()
